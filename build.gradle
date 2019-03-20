@@ -14,7 +14,10 @@
 // limitations under the License.
 
 import org.ajoberstar.grgit.Grgit
-
+ScalaCompileOptions.metaClass.daemonServer = true
+ScalaCompileOptions.metaClass.fork = true
+ScalaCompileOptions.metaClass.useAnt = false
+ScalaCompileOptions.metaClass.useCompileDaemon = false
 buildscript {
   repositories {
     mavenCentral()
