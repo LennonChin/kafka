@@ -31,6 +31,7 @@ import java.util.List;
 /**
  * A container that holds the list {@link org.apache.kafka.clients.producer.ProducerInterceptor}
  * and wraps calls to the chain of custom interceptors.
+ * 用于装载ProducerInterceptor集合，里面用一个List装载了所有的拦截器
  */
 public class ProducerInterceptors<K, V> implements Closeable {
     private static final Logger log = LoggerFactory.getLogger(ProducerInterceptors.class);
@@ -56,8 +57,10 @@ public class ProducerInterceptors<K, V> implements Closeable {
      */
     public ProducerRecord<K, V> onSend(ProducerRecord<K, V> record) {
         ProducerRecord<K, V> interceptRecord = record;
+        // 遍历所有的拦截器
         for (ProducerInterceptor<K, V> interceptor : this.interceptors) {
             try {
+            	// 对需要发送的消息进行拦截器处理
                 interceptRecord = interceptor.onSend(interceptRecord);
             } catch (Exception e) {
                 // do not propagate interceptor exception, log and continue calling other interceptors

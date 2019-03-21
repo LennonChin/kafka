@@ -36,16 +36,28 @@ import org.slf4j.LoggerFactory;
 public final class Metadata {
 
     private static final Logger log = LoggerFactory.getLogger(Metadata.class);
-
+    // 两次刷新元数据退避时间，避免频繁刷新导致性能消耗
     private final long refreshBackoffMs;
+    // 每隔多久更新一次，默认是300秒
     private final long metadataExpireMs;
+    // 集群元数据版本号，元数据更新成功一次，版本号就自增1
     private int version;
+    // 上一次更新元数据的时间戳
     private long lastRefreshMs;
-    private long lastSuccessfulRefreshMs;
+	/**
+	 * 上一次成功更新元数据的时间戳，如果每次更新都成功，
+	 * lastSuccessfulRefreshMs应该与lastRefreshMs相同，否则lastRefreshMs > lastSuccessfulRefreshMs
+	 */
+	private long lastSuccessfulRefreshMs;
+	// 记录kafka集群的元数据
     private Cluster cluster;
+    // 表示是否强制更新Cluster
     private boolean needUpdate;
+    // 记录当前已知的所有的主题
     private final Set<String> topics;
+    // 监听器集合，用于监听Metadata更新
     private final List<Listener> listeners;
+    // 是否需要更新全部主题的元数据
     private boolean needMetadataForAllTopics;
 
     /**
@@ -103,8 +115,8 @@ public final class Metadata {
      * Request an update of the current cluster metadata info, return the current version before the update
      */
     public synchronized int requestUpdate() {
-        this.needUpdate = true;
-        return this.version;
+        this.needUpdate = true; // 设置为需要强制更新
+        return this.version; // 返回当前集群元数据的版本号
     }
 
     /**
@@ -124,6 +136,7 @@ public final class Metadata {
         }
         long begin = System.currentTimeMillis();
         long remainingWaitMs = maxWaitMs;
+        // 比较版本号
         while (this.version <= lastVersion) {
             if (remainingWaitMs != 0)
                 wait(remainingWaitMs);

@@ -66,20 +66,29 @@ public class DefaultPartitioner implements Partitioner {
      * @param cluster The current cluster metadata
      */
     public int partition(String topic, Object key, byte[] keyBytes, Object value, byte[] valueBytes, Cluster cluster) {
+        // 获取集群中指定topic的分区信息
         List<PartitionInfo> partitions = cluster.partitionsForTopic(topic);
+        // 分区数量
         int numPartitions = partitions.size();
         if (keyBytes == null) {
+        	// 没有指定key
+			// 获取counter并自增，counter是个原子类
             int nextValue = counter.getAndIncrement();
+            // 获取可用分区
             List<PartitionInfo> availablePartitions = cluster.availablePartitionsForTopic(topic);
             if (availablePartitions.size() > 0) {
+            	// counter % 可用分区数
                 int part = DefaultPartitioner.toPositive(nextValue) % availablePartitions.size();
                 return availablePartitions.get(part).partition();
             } else {
                 // no partitions are available, give a non-available partition
+				// 没有可用分区，直接给一个可用分区
                 return DefaultPartitioner.toPositive(nextValue) % numPartitions;
             }
         } else {
             // hash the keyBytes to choose a partition
+			// 指定了key，对key进行hash，然后取余
+			// murmur2是一种高效率低碰撞的Hash算法
             return DefaultPartitioner.toPositive(Utils.murmur2(keyBytes)) % numPartitions;
         }
     }
