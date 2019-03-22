@@ -482,7 +482,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             log.trace("Sending record {} with callback {} to topic {} partition {}", record, callback, record.topic(), partition);
             // producer callback will make sure to call both 'callback' and interceptor callback
             Callback interceptCallback = this.interceptors == null ? callback : new InterceptorCallback<>(callback, this.interceptors, tp);
-            // 将消息追加到RecordAccumulator中
+            // 将消息追加到RecordAccumulator中，调用其append()方法
             RecordAccumulator.RecordAppendResult result = accumulator.append(tp, timestamp, serializedKey, serializedValue, interceptCallback, remainingWaitMs);
             // 如果达到批次要求
             if (result.batchIsFull || result.newBatchCreated) {

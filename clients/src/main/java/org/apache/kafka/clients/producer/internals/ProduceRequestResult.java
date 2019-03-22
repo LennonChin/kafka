@@ -29,6 +29,7 @@ import org.apache.kafka.common.TopicPartition;
  */
 public final class ProduceRequestResult {
 
+    // 计数为1的栅栏
     private final CountDownLatch latch = new CountDownLatch(1);
     private volatile TopicPartition topicPartition;
     private volatile long baseOffset = -1L;
@@ -44,9 +45,11 @@ public final class ProduceRequestResult {
      * @param error The error that occurred if there was one, or null.
      */
     public void done(TopicPartition topicPartition, long baseOffset, RuntimeException error) {
+    	// 记录信息
         this.topicPartition = topicPartition;
         this.baseOffset = baseOffset;
         this.error = error;
+        // 调用countDown()，唤醒阻塞在latch上的线程
         this.latch.countDown();
     }
 

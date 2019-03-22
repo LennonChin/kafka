@@ -172,6 +172,7 @@ public class Sender implements Runnable {
     void run(long now) {
         Cluster cluster = metadata.fetch();
         // get the list of partitions with data ready to send
+		// 获取当前集群中符合发送消息条件的节点集合
         RecordAccumulator.ReadyCheckResult result = this.accumulator.ready(cluster, now);
 
         // if there are any partitions whose leaders are not known yet, force metadata update
@@ -190,6 +191,7 @@ public class Sender implements Runnable {
         }
 
         // create produce requests
+		// key为NodeId，value是待发送的RecordBatch集合
         Map<Integer, List<RecordBatch>> batches = this.accumulator.drain(cluster,
                                                                          result.readyNodes,
                                                                          this.maxRequestSize,

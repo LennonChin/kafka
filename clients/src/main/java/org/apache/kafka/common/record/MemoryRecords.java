@@ -30,18 +30,22 @@ public class MemoryRecords implements Records {
     private final static int WRITE_LIMIT_FOR_READABLE_ONLY = -1;
 
     // the compressor used for appends-only
+	// 压缩器
     private final Compressor compressor;
 
     // the write limit for writable buffer, which may be smaller than the buffer capacity
+	// 记录buffer最多可以写入的字节数
     private final int writeLimit;
 
     // the capacity of the initial buffer, which is only used for de-allocation of writable records
     private final int initialCapacity;
 
     // the underlying buffer used for read; while the records are still writable it is null
+    // 保存消息数据的NIO ByteBuffer
     private ByteBuffer buffer;
 
     // indicate if the memory records is writable or not (i.e. used for appends or read-only)
+	// 用于标识MemoryRecords是否可写，在MemoryRecord发送前会将该字段置为false只读
     private boolean writable;
 
     // Construct a writable memory records
@@ -75,9 +79,11 @@ public class MemoryRecords implements Records {
      * Append the given record and offset to the buffer
      */
     public void append(long offset, Record record) {
+    	// 判断是否可写
         if (!writable)
             throw new IllegalStateException("Memory records is not writable");
 
+        // 使用压缩器将数据写入到buffer
         int size = record.size();
         compressor.putLong(offset);
         compressor.putInt(size);
@@ -113,12 +119,25 @@ public class MemoryRecords implements Records {
      * capacity will be the message size which is larger than the write limit, i.e. the batch size. In this case
      * the checking should be based on the capacity of the initialized buffer rather than the write limit in order
      * to accept this single record.
+	 * 根据Compressor估算的已写字节数，估计MemoryRecords剩余空间是否足够写入指定的数据。
      */
     public boolean hasRoomFor(byte[] key, byte[] value) {
+    	// 检查是否可写，如果不可写直接返回false
         if (!this.writable)
             return false;
-
-        return this.compressor.numRecordsWritten() == 0 ?
+	
+		/**
+		 * this.compressor.numRecordsWritten()：已写入压缩器的记录数
+		 * Records.LOG_OVERHEAD：包括SIZE_LENGTH和OFFSET_LENGTH，分别表示记录长度和偏移量
+		 * this.initialCapacity：buffer的初始容量
+		 * this.compressor.estimatedBytesWritten()：估算的压缩器已写入字节数
+		 * this.writeLimit：buffer最多还可写入的字节数
+		 *
+		 * 判断逻辑如下：
+		 * 1. 如果写入压缩器的记录数为0，则判断是否 buffer的初始容量 >= SIZE_LENGTH + OFFSET_LENGTH + 记录大小；
+		 * 2. 否则判断是否 buffer最多还可写入的字节数 >= 估算的压缩器已写入字节数 + SIZE_LENGTH + OFFSET_LENGTH + 记录大小；
+		 */
+		return this.compressor.numRecordsWritten() == 0 ?
             this.initialCapacity >= Records.LOG_OVERHEAD + Record.recordSize(key, value) :
             this.writeLimit >= this.compressor.estimatedBytesWritten() + Records.LOG_OVERHEAD + Record.recordSize(key, value);
     }
@@ -146,6 +165,8 @@ public class MemoryRecords implements Records {
 
     /**
      * The size of this record set
+	 * 对于可写的MemoryRecords，返回的是ByteBufferOutputStream.buffer字段的大小；
+	 * 对于只读MemoryRecords，返回的是MemoryRecords.buffer的大小。
      */
     public int sizeInBytes() {
         if (writable) {

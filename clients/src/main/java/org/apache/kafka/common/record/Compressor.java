@@ -92,6 +92,7 @@ public class Compressor {
     public long maxTimestamp;
 
     public Compressor(ByteBuffer buffer, CompressionType type) {
+        // 记录压缩类型
         this.type = type;
         this.initPos = buffer.position();
 
@@ -107,7 +108,9 @@ public class Compressor {
         }
 
         // create the stream
+		// 创建输出流，通过ByteBufferOutputStream装饰，添加扩容功能
         bufferStream = new ByteBufferOutputStream(buffer);
+        // 根据压缩类型创建合适的压缩流，通过wrapForOutput()方法中不同的压缩器装饰，添加压缩功能
         appendStream = wrapForOutput(bufferStream, type, COMPRESSION_DEFAULT_BUFFER_SIZE);
     }
 
@@ -231,11 +234,13 @@ public class Compressor {
         return numRecords;
     }
 
+    // 根据压缩器类型，估算已写入的字节数
     public long estimatedBytesWritten() {
         if (type == CompressionType.NONE) {
             return bufferStream.buffer().position();
         } else {
             // estimate the written bytes to the underlying byte buffer based on uncompressed written bytes
+			// 未压缩时写入字节数 * 压缩率 * 估算因子
             return (long) (writtenUncompressed * TYPE_TO_RATE[type.id] * COMPRESSION_RATE_ESTIMATION_FACTOR);
         }
     }
@@ -248,9 +253,11 @@ public class Compressor {
                 case NONE:
                     return new DataOutputStream(buffer);
                 case GZIP:
+                	// GZIP压缩输出流是JDK自带的
                     return new DataOutputStream(new GZIPOutputStream(buffer, bufferSize));
                 case SNAPPY:
                     try {
+                    	// 利用反射方式创建Snappy压缩输出流
                         OutputStream stream = (OutputStream) snappyOutputStreamSupplier.get().newInstance(buffer, bufferSize);
                         return new DataOutputStream(stream);
                     } catch (Exception e) {
@@ -258,6 +265,7 @@ public class Compressor {
                     }
                 case LZ4:
                     try {
+						// 利用反射方式创建LZ4压缩输出流
                         OutputStream stream = (OutputStream) lz4OutputStreamSupplier.get().newInstance(buffer);
                         return new DataOutputStream(stream);
                     } catch (Exception e) {
