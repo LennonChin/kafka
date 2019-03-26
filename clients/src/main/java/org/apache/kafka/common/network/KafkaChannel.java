@@ -30,10 +30,16 @@ import org.apache.kafka.common.utils.Utils;
 
 public class KafkaChannel {
     private final String id;
+	/**
+	 * 封装了SocketChannel和SelectionKey，根据网络协议的不同提供不同的子类，对KafkaChannel提供统一的接口，策略模式的运用
+	 * 具体实现类有PlaintextTransportLayer和SslTransportLayer
+	 */
     private final TransportLayer transportLayer;
     private final Authenticator authenticator;
     private final int maxReceiveSize;
+    // 读缓存，底层使用ByteBuffer实现
     private NetworkReceive receive;
+    // 写缓存，底层使用ByteBuffer实现
     private Send send;
 
     public KafkaChannel(String id, TransportLayer transportLayer, Authenticator authenticator, int maxReceiveSize) throws IOException {
@@ -121,10 +127,13 @@ public class KafkaChannel {
     public void setSend(Send send) {
         if (this.send != null)
             throw new IllegalStateException("Attempt to begin a send operation with prior send operation still in progress.");
+        // 记录send
         this.send = send;
+        // 添加OP_WRITE事件关注
         this.transportLayer.addInterestOps(SelectionKey.OP_WRITE);
     }
 
+    // 读取数据，返回NetworkReceive对象
     public NetworkReceive read() throws IOException {
         NetworkReceive result = null;
 
@@ -132,10 +141,13 @@ public class KafkaChannel {
             receive = new NetworkReceive(maxReceiveSize, id);
         }
 
+        // 读取数据
         receive(receive);
+        // 判断是否读取完
         if (receive.complete()) {
             receive.payload().rewind();
             result = receive;
+            // 将receive置为null
             receive = null;
         }
         return result;
@@ -143,7 +155,9 @@ public class KafkaChannel {
 
     public Send write() throws IOException {
         Send result = null;
+        // send()方法发送时，如果发送完成会返回true，否则返回false
         if (send != null && send(send)) {
+        	// 完成后使用result记录send，用于返回，并将send置为null，用于下一次发送
             result = send;
             send = null;
         }
@@ -155,8 +169,11 @@ public class KafkaChannel {
     }
 
     private boolean send(Send send) throws IOException {
+    	// 发送send
         send.writeTo(transportLayer);
+        // 检查是否完成
         if (send.completed())
+        	// 如果完成就移除对OP_WRITE事件的关注
             transportLayer.removeInterestOps(SelectionKey.OP_WRITE);
 
         return send.completed();

@@ -40,6 +40,8 @@ final class ClusterConnectionStates {
         if (state == null)
             return true;
         else
+			// 不在connecting状态
+			// 两次重试之间的时间大于重试的退避时间
             return state.state == ConnectionState.DISCONNECTED && now - state.lastConnectAttemptMs >= this.reconnectBackoffMs;
     }
 
@@ -149,8 +151,9 @@ final class ClusterConnectionStates {
      * The state of our connection to a node
      */
     private static class NodeConnectionState {
-
+        // 连接状态
         ConnectionState state;
+        // 最近一次尝试连接的时间戳
         long lastConnectAttemptMs;
 
         public NodeConnectionState(ConnectionState state, long lastConnectAttempt) {

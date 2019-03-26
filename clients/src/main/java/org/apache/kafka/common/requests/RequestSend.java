@@ -22,7 +22,9 @@ import org.apache.kafka.common.protocol.types.Struct;
  */
 public class RequestSend extends NetworkSend {
 
+    // 请求头
     private final RequestHeader header;
+    // 请求体
     private final Struct body;
 
     public RequestSend(String destination, RequestHeader header, Struct body) {
@@ -32,9 +34,13 @@ public class RequestSend extends NetworkSend {
     }
 
     public static ByteBuffer serialize(RequestHeader header, Struct body) {
+    	// 分配缓冲区，大小是header和body的总大小
         ByteBuffer buffer = ByteBuffer.allocate(header.sizeOf() + body.sizeOf());
+        // 写入请求头
         header.writeTo(buffer);
+        // 写入请求体
         body.writeTo(buffer);
+        //
         buffer.rewind();
         return buffer;
     }

@@ -129,26 +129,46 @@ import org.slf4j.LoggerFactory;
 public class KafkaProducer<K, V> implements Producer<K, V> {
 
     private static final Logger log = LoggerFactory.getLogger(KafkaProducer.class);
+    
+    // 用于生产者客户端名称的生成，自增序列器
     private static final AtomicInteger PRODUCER_CLIENT_ID_SEQUENCE = new AtomicInteger(1);
+    // JMX中显示的前缀
     private static final String JMX_PREFIX = "kafka.producer";
 
+    // 生产者客户端的名称
     private String clientId;
+    // 分区器
     private final Partitioner partitioner;
+    // 消息的最大长度，包含了消息头、序列化后的key和序列化后的value的长度
     private final int maxRequestSize;
+    // 发送单个消息的缓冲区大小
     private final long totalMemorySize;
+    // 集群元数据信息
     private final Metadata metadata;
+    // 用于存放消息的缓冲
     private final RecordAccumulator accumulator;
+    // 发送消息的Sender任务
     private final Sender sender;
+    // 性能监控相关
     private final Metrics metrics;
+    // 发送消息的线程，sender对象会在该线程中运行
     private final Thread ioThread;
+    // 压缩算法
     private final CompressionType compressionType;
+    // 错误记录器
     private final Sensor errors;
+    // 用于时间相关操作
     private final Time time;
+    // 键和值序列化器
     private final Serializer<K> keySerializer;
     private final Serializer<V> valueSerializer;
+    // 生产者配置集
     private final ProducerConfig producerConfig;
+    // 等待更新Kafka集群元数据的最大时长
     private final long maxBlockTimeMs;
+    // 消息的超时时间，也就是从消息发送到收到ACK响应的最长时长
     private final int requestTimeoutMs;
+    // 拦截器集合
     private final ProducerInterceptors<K, V> interceptors;
 
     /**

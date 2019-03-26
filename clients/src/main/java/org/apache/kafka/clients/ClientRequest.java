@@ -21,6 +21,7 @@ public final class ClientRequest {
 
     private final long createdTimeMs;
     private final boolean expectResponse;
+    // 消息结构的具体体现方式，RequestSend类有两个字段：header（RequestHeader）和body（Struct类型）
     private final RequestSend request;
     private final RequestCompletionHandler callback;
     private final boolean isInitiatedByNetworkClient;

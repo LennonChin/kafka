@@ -62,11 +62,14 @@ public class NetworkReceive implements Receive {
         return source;
     }
 
+    // 是否完成读取
     @Override
     public boolean complete() {
+        // ByteBuffer无剩余
         return !size.hasRemaining() && !buffer.hasRemaining();
     }
 
+    // 从channel中读取数据
     public long readFrom(ScatteringByteChannel channel) throws IOException {
         return readFromReadableChannel(channel);
     }
@@ -74,6 +77,7 @@ public class NetworkReceive implements Receive {
     // Need a method to read from ReadableByteChannel because BlockingChannel requires read with timeout
     // See: http://stackoverflow.com/questions/2866557/timeout-for-socketchannel-doesnt-work
     // This can go away after we get rid of BlockingChannel
+    // 从channel中读取数据
     @Deprecated
     public long readFromReadableChannel(ReadableByteChannel channel) throws IOException {
         int read = 0;
@@ -84,16 +88,18 @@ public class NetworkReceive implements Receive {
             read += bytesRead;
             if (!size.hasRemaining()) {
                 size.rewind();
+                // 获取消息长度
                 int receiveSize = size.getInt();
                 if (receiveSize < 0)
                     throw new InvalidReceiveException("Invalid receive (size = " + receiveSize + ")");
                 if (maxSize != UNLIMITED && receiveSize > maxSize)
                     throw new InvalidReceiveException("Invalid receive (size = " + receiveSize + " larger than " + maxSize + ")");
-
+                // 根据消息长度分配ByteBuffer
                 this.buffer = ByteBuffer.allocate(receiveSize);
             }
         }
         if (buffer != null) {
+        	// 读取消息体
             int bytesRead = channel.read(buffer);
             if (bytesRead < 0)
                 throw new EOFException();

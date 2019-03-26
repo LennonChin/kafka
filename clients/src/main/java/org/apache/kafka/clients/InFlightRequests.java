@@ -80,12 +80,22 @@ final class InFlightRequests {
 
     /**
      * Can we send more requests to this node?
+     *
+     * 判断是否可以向某个Node发送更多的请求
+     * 主要通过Deque<ClientRequest>队列的情况来判断
+     * 该队列中存放了所有已经发送但没有收到响应的ClientRequest
      * 
      * @param node Node in question
      * @return true iff we have no requests still being sent to the given node
      */
     public boolean canSendMore(String node) {
         Deque<ClientRequest> queue = requests.get(node);
+        /**
+         * queue为null，
+         * 或者queue内没有元素
+         * 或者queue的队首元素已经完成了请求，
+         * 或者queue内元素个数没有达到maxInFlightRequestsPerConnection指定的数量
+         */
         return queue == null || queue.isEmpty() ||
                (queue.peekFirst().request().completed() && queue.size() < this.maxInFlightRequestsPerConnection);
     }

@@ -36,7 +36,11 @@ import static org.apache.kafka.common.protocol.types.Type.STRING;
 import static org.apache.kafka.common.protocol.types.Type.NULLABLE_STRING;
 
 public class Protocol {
-
+	
+	/**
+	 * 请求头
+	 * api_key, api_version, correlation_id, client_id, 请求体
+	 */
     public static final Schema REQUEST_HEADER = new Schema(new Field("api_key", INT16, "The id of the request type."),
                                                            new Field("api_version", INT16, "The version of the API."),
                                                            new Field("correlation_id",
@@ -46,8 +50,12 @@ public class Protocol {
                                                                      NULLABLE_STRING,
                                                                      "A user specified identifier for the client making the request.",
                                                                      ""));
-
-    public static final Schema RESPONSE_HEADER = new Schema(new Field("correlation_id",
+	
+	/**
+	 * 响应头
+	 * correlation_id, 请求体
+	 */
+	public static final Schema RESPONSE_HEADER = new Schema(new Field("correlation_id",
                                                                       INT32,
                                                                       "The user-supplied value passed in with the request"));
 
@@ -122,16 +130,22 @@ public class Protocol {
 
     /* Produce api */
 
+	// topic, data[(partition, record_set)]
     public static final Schema TOPIC_PRODUCE_DATA_V0 = new Schema(new Field("topic", STRING),
                                                                   new Field("data", new ArrayOf(new Schema(new Field("partition", INT32),
                                                                                                      new Field("record_set", BYTES)))));
-
-    public static final Schema PRODUCE_REQUEST_V0 = new Schema(new Field("acks",
+	
+	/**
+	 * 请求体
+	 * acks, timeout, topic_data[(topic, data)]
+	 */
+	public static final Schema PRODUCE_REQUEST_V0 = new Schema(new Field("acks",
                                                                    INT16,
                                                                    "The number of nodes that should replicate the produce before returning. -1 indicates the full ISR."),
                                                                new Field("timeout", INT32, "The time to await a response in ms."),
                                                                new Field("topic_data", new ArrayOf(TOPIC_PRODUCE_DATA_V0)));
 
+	// responses[(topic, partition_responses[(partition, error_code, base_offset)])],
     public static final Schema PRODUCE_RESPONSE_V0 = new Schema(new Field("responses",
                                                                     new ArrayOf(new Schema(new Field("topic", STRING),
                                                                                            new Field("partition_responses",

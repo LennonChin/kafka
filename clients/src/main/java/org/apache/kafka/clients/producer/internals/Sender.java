@@ -170,12 +170,14 @@ public class Sender implements Runnable {
      *            The current POSIX time in milliseconds
      */
     void run(long now) {
+        // 获取Cluster集群元数据信息
         Cluster cluster = metadata.fetch();
         // get the list of partitions with data ready to send
 		// 获取当前集群中符合发送消息条件的节点集合
         RecordAccumulator.ReadyCheckResult result = this.accumulator.ready(cluster, now);
 
         // if there are any partitions whose leaders are not known yet, force metadata update
+        //  如果ReadyCheckResult中标识有unknownLeadersExist，则调用Metadata的requestUpdate方法，标记需要更新Kafka的集群信息
         if (result.unknownLeadersExist)
             this.metadata.requestUpdate();
 
@@ -184,7 +186,9 @@ public class Sender implements Runnable {
         long notReadyTimeout = Long.MAX_VALUE;
         while (iter.hasNext()) {
             Node node = iter.next();
+            // 遍历所有readyNode节点，使用NetWorkClient的ready()方法验证这些节点是否可用
             if (!this.client.ready(node, now)) {
+            	// 如果节点不可用，就将其从readyNodes集合中移除
                 iter.remove();
                 notReadyTimeout = Math.min(notReadyTimeout, this.client.connectionDelay(node, now));
             }
@@ -203,13 +207,18 @@ public class Sender implements Runnable {
                     this.accumulator.mutePartition(batch.topicPartition);
             }
         }
-
+		/**
+		 * 调用RecordAccumulator.abortExpiredBatches()方法处理RecordAccumulator中超时的消息。
+		 * 其代码逻辑是，遍历RecordAccumulator中保存的全部RecordBatch，调用RecordBatch.maybeExpire()方法进行处理。
+		 * 如果已超时，则调用RecordBatch.done()方法，其中会触发自定义Callback，并将RecordBatch从队列中移除，释放ByteBuffer空间。
+		 */
         List<RecordBatch> expiredBatches = this.accumulator.abortExpiredBatches(this.requestTimeout, now);
         // update sensors
         for (RecordBatch expiredBatch : expiredBatches)
             this.sensors.recordErrors(expiredBatch.topicPartition.topic(), expiredBatch.recordCount);
 
         sensors.updateProduceRequestMetrics(batches);
+        // 将待发送的消息封装为ClientRequest
         List<ClientRequest> requests = createProduceRequests(batches, now);
         // If we have any nodes that are ready to send + have sendable data, poll with 0 timeout so this can immediately
         // loop and try sending more data. Otherwise, the timeout is determined by nodes that have partitions with data
@@ -222,12 +231,14 @@ public class Sender implements Runnable {
             pollTimeout = 0;
         }
         for (ClientRequest request : requests)
+        	// 使用NetworkClient将ClientRequest对象写入KafkaChannel的send字段
             client.send(request, now);
 
         // if some partitions are already ready to be sent, the select time would be 0;
         // otherwise if some partition already has some data accumulated but not ready yet,
         // the select time will be the time difference between now and its linger expiry time;
         // otherwise the select time will be the time difference between now and the metadata expiry time;
+		// 使用NetworkClient将KafkaChannel的send字段中保存的ClientRequest发送出去
         this.client.poll(pollTimeout, now);
     }
 
@@ -254,9 +265,11 @@ public class Sender implements Runnable {
     private void handleProduceResponse(ClientResponse response, Map<TopicPartition, RecordBatch> batches, long now) {
         int correlationId = response.request().request().header().correlationId();
         if (response.wasDisconnected()) {
+			// 对于连接断开而产生的ClientResponse，会重试发送请求，如果不能重试，则调用其中每条消息的回调
             log.trace("Cancelled request {} due to node {} being disconnected", response, response.request()
                                                                                                   .request()
                                                                                                   .destination());
+            // 遍历RecordBatch，调用completeBatch()处理，第二个参数传递的是Errors.NETWORK_EXCEPTION
             for (RecordBatch batch : batches.values())
                 completeBatch(batch, Errors.NETWORK_EXCEPTION, -1L, Record.NO_TIMESTAMP, correlationId, now);
         } else {
@@ -265,12 +278,15 @@ public class Sender implements Runnable {
                       correlationId);
             // if we have a response, parse it
             if (response.hasResponse()) {
+            	// 解析响应体
                 ProduceResponse produceResponse = new ProduceResponse(response.responseBody());
                 for (Map.Entry<TopicPartition, ProduceResponse.PartitionResponse> entry : produceResponse.responses().entrySet()) {
+                	// 解析各种数据
                     TopicPartition tp = entry.getKey();
                     ProduceResponse.PartitionResponse partResp = entry.getValue();
                     Errors error = Errors.forCode(partResp.errorCode);
                     RecordBatch batch = batches.get(tp);
+                    // 调用completeBatch()方法处理
                     completeBatch(batch, error, partResp.baseOffset, partResp.timestamp, correlationId, now);
                 }
                 this.sensors.recordLatency(response.request().request().destination(), response.requestLatencyMs());
@@ -278,6 +294,7 @@ public class Sender implements Runnable {
                                                 produceResponse.getThrottleTime());
             } else {
                 // this is the acks = 0 case, just complete all requests
+				// 没有响应内容，即acks = 0的情况，直接调用completeBatch()处理
                 for (RecordBatch batch : batches.values())
                     completeBatch(batch, Errors.NONE, -1L, Record.NO_TIMESTAMP, correlationId, now);
             }
@@ -296,15 +313,18 @@ public class Sender implements Runnable {
      */
     private void completeBatch(RecordBatch batch, Errors error, long baseOffset, long timestamp, long correlationId, long now) {
         if (error != Errors.NONE && canRetry(batch, error)) {
+        	// 可重试的请求
             // retry
             log.warn("Got error produce response with correlation id {} on topic-partition {}, retrying ({} attempts left). Error: {}",
                      correlationId,
                      batch.topicPartition,
                      this.retries - batch.attempts - 1,
                      error);
+            // 将请求RecordBatch重新加入RecordAccumulator，等待发送
             this.accumulator.reenqueue(batch, now);
             this.sensors.recordRetries(batch.topicPartition.topic(), batch.recordCount);
         } else {
+        	// 不可重试的请求，将RecordBatch标记为异常完成，然后释放RecordBatch
             RuntimeException exception;
             if (error == Errors.TOPIC_AUTHORIZATION_FAILED)
                 exception = new TopicAuthorizationException(batch.topicPartition.topic());
@@ -312,11 +332,13 @@ public class Sender implements Runnable {
                 exception = error.exception();
             // tell the user the result of their request
             batch.done(baseOffset, timestamp, exception);
+            // 释放RecordBatch
             this.accumulator.deallocate(batch);
             if (error != Errors.NONE)
                 this.sensors.recordErrors(batch.topicPartition.topic(), batch.recordCount);
         }
         if (error.exception() instanceof InvalidMetadataException)
+        	// 标识需要更新Metadata中记录的集群元数据
             metadata.requestUpdate();
         // Unmute the completed partition.
         if (guaranteeMessageOrder)
@@ -332,10 +354,14 @@ public class Sender implements Runnable {
 
     /**
      * Transfer the record batches into a list of produce requests on a per-node basis
+	 * 将NodeId -> List<RecordBatch> 转换为 List<ClientRequest>
      */
     private List<ClientRequest> createProduceRequests(Map<Integer, List<RecordBatch>> collated, long now) {
+    	// 创建结果集合
         List<ClientRequest> requests = new ArrayList<ClientRequest>(collated.size());
+        // 遍历collated，使用produceRequest()封装为ClientRequest对象
         for (Map.Entry<Integer, List<RecordBatch>> entry : collated.entrySet())
+        	// 将创建的ClientRequest对象放入requests中
             requests.add(produceRequest(now, entry.getKey(), acks, requestTimeout, entry.getValue()));
         return requests;
     }
@@ -346,21 +372,25 @@ public class Sender implements Runnable {
     private ClientRequest produceRequest(long now, int destination, short acks, int timeout, List<RecordBatch> batches) {
         Map<TopicPartition, ByteBuffer> produceRecordsByPartition = new HashMap<TopicPartition, ByteBuffer>(batches.size());
         final Map<TopicPartition, RecordBatch> recordsByPartition = new HashMap<TopicPartition, RecordBatch>(batches.size());
+        // 遍历batche集合进行分类，分别装入produceRecordsByPartition和recordsByPartition中
         for (RecordBatch batch : batches) {
             TopicPartition tp = batch.topicPartition;
             produceRecordsByPartition.put(tp, batch.records.buffer());
             recordsByPartition.put(tp, batch);
         }
+        // 创建ProduceRequest
         ProduceRequest request = new ProduceRequest(acks, timeout, produceRecordsByPartition);
+        // 创建RequestSend
         RequestSend send = new RequestSend(Integer.toString(destination),
                                            this.client.nextRequestHeader(ApiKeys.PRODUCE),
                                            request.toStruct());
+        // 创建callback回调
         RequestCompletionHandler callback = new RequestCompletionHandler() {
             public void onComplete(ClientResponse response) {
                 handleProduceResponse(response, recordsByPartition, time.milliseconds());
             }
         };
-
+        // 创建ClientRequest对象并进行返回
         return new ClientRequest(now, acks != 0, send, callback);
     }
 
