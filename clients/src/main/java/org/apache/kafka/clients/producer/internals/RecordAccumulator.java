@@ -329,7 +329,7 @@ public final class RecordAccumulator {
      * </ul>
      * </ol>
 	 *
-	 * 该方法用于获取当前集群中符合发送消息条件的节点集合
+	 * 该方法用于获取当前集群中符合发送消息条件的数据集
      */
     public ReadyCheckResult ready(Cluster cluster, long nowMs) {
     	// 记录可以向哪些Node节点发送数据
@@ -359,17 +359,29 @@ public final class RecordAccumulator {
                 	// 查看该RecordBatch队列的第一个RecordBatch
                     RecordBatch batch = deque.peekFirst();
                     if (batch != null) {
-                    	// 是否
-                        boolean backingOff = batch.attempts > 0 && batch.lastAttemptMs + retryBackoffMs > nowMs;
-                        
-                        long waitedTimeMs = nowMs - batch.lastAttemptMs;
-                        long timeToWaitMs = backingOff ? retryBackoffMs : lingerMs;
-                        long timeLeftMs = Math.max(timeToWaitMs - waitedTimeMs, 0);
-                        
-                        // Deque中有多个RecordBatch或是第一个RecordBatch是否满了
-                        boolean full = deque.size() > 1 || batch.records.isFull();
-                        // 是否超时
-                        boolean expired = waitedTimeMs >= timeToWaitMs;
+						/**
+						 * 频繁多次请求的间隔是否在退避时间限制之内，是否需要退避
+						 * 1. batch.attempts > 0：请求次数大于0时；
+						 * 2. batch.lastAttemptMs + retryBackoffMs > nowMs：本次请求与上次请求的间隔小于退避时间retryBackoffMs
+						 */
+						boolean backingOff = batch.attempts > 0 && batch.lastAttemptMs + retryBackoffMs > nowMs;
+						// 本次请求与上次请求的间隔时间
+						long waitedTimeMs = nowMs - batch.lastAttemptMs;
+						/**
+						 * 需要等待的时间，这个值根据是否需要退避，来选择退避时间或者延迟时间
+						 * retryBackoffMs：退避时间（用户可配置，retry.backoff.ms）
+						 * lingerMs：延迟时间（用户可配置，linger.ms）
+						 * backingOff：是否需要退避
+						 * 当需要退避时，需要等待的时间为退避时间，否则为延迟时间
+						 */
+						long timeToWaitMs = backingOff ? retryBackoffMs : lingerMs;
+						// 计算剩余时间，需要等待的时间 - 距离上次发送的间隔时间
+						long timeLeftMs = Math.max(timeToWaitMs - waitedTimeMs, 0);
+	
+						// Deque中有多个RecordBatch或是第一个RecordBatch是否满了
+						boolean full = deque.size() > 1 || batch.records.isFull();
+						// 是否超时，距离上次发送的间隔时间 - 需要等待的时间
+						boolean expired = waitedTimeMs >= timeToWaitMs;
                         
                         // 得到条件
                         boolean sendable = full || expired || exhausted
@@ -488,12 +500,18 @@ public final class RecordAccumulator {
 
     /**
      * Get the deque for the given topic-partition, creating it if necessary.
+     * 根据TopicPartition获取对应的Deque
      */
     private Deque<RecordBatch> getOrCreateDeque(TopicPartition tp) {
+    	// 从batches中尝试获取，batches的结构是ConcurrentMap<TopicPartition, Deque<RecordBatch>>
         Deque<RecordBatch> d = this.batches.get(tp);
+        // 如果获取到就返回
         if (d != null)
             return d;
+        // 如果没有获取到，就创建一个新的
         d = new ArrayDeque<>();
+        // 使用putIfAbsent进行添加，防止并发引起的重复添加
+		// putIfAbsent会先判断是否存在，如果存在就返回且不添加新的，否则返回null并添加新的
         Deque<RecordBatch> previous = this.batches.putIfAbsent(tp, d);
         if (previous == null)
             return d;

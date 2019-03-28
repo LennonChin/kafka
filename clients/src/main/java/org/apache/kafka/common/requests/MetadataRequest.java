@@ -26,6 +26,7 @@ import java.util.List;
 
 public class MetadataRequest extends AbstractRequest {
 
+    // Schema
     private static final Schema CURRENT_SCHEMA = ProtoUtils.currentRequestSchema(ApiKeys.METADATA.id);
     private static final String TOPICS_KEY_NAME = "topics";
 
@@ -46,6 +47,7 @@ public class MetadataRequest extends AbstractRequest {
         if (topics == null)
             struct.set(TOPICS_KEY_NAME, null);
         else
+        	// 将需要更新元数据的主题进行记录
             struct.set(TOPICS_KEY_NAME, topics.toArray());
         this.topics = topics;
     }

@@ -99,11 +99,15 @@ public class MemoryRecords implements Records {
     public long append(long offset, long timestamp, byte[] key, byte[] value) {
         if (!writable)
             throw new IllegalStateException("Memory records is not writable");
-
+        // 消息大小
         int size = Record.recordSize(key, value);
+        // 向压缩器中添加offset记录
         compressor.putLong(offset);
+        // 向压缩器中添加消息大小记录
         compressor.putInt(size);
+        // 向压缩器中添加消息数据
         long crc = compressor.putRecord(timestamp, key, value);
+        // 压缩器记录写入数据的大小
         compressor.recordWritten(size + Records.LOG_OVERHEAD);
         return crc;
     }

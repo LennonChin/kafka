@@ -36,11 +36,19 @@ final class InFlightRequests {
      * Add the given request to the queue for the connection it was directed to
      */
     public void add(ClientRequest request) {
+        /**
+         * 以ClientRequest对象中封装的RequestSend的destination为键从requests中获取对应的Deque
+         * 这个destination的值其实是当时发送请求的目的Node节点的id，可以回顾下面的方法：
+		 * {@link NetworkClient.DefaultMetadataUpdater#maybeUpdate}
+         * requests的结构是Map<String, Deque<ClientRequest>>
+         */
         Deque<ClientRequest> reqs = this.requests.get(request.request().destination());
+        // 如果没有获取到就创建一个
         if (reqs == null) {
             reqs = new ArrayDeque<>();
             this.requests.put(request.request().destination(), reqs);
         }
+        // 将ClientRequest对象添加到对应的Deque中
         reqs.addFirst(request);
     }
 

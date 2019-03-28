@@ -302,8 +302,13 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                     time);
             // 更新Kafka集群的元数据，这一步会验证并过滤配置的bootstrap.servers项中的地址是否可用
             List<InetSocketAddress> addresses = ClientUtils.parseAndValidateAddresses(config.getList(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG));
-            // 更新元数据
-            this.metadata.update(Cluster.bootstrap(addresses), time.milliseconds());
+			/**
+			 * 会将创建KafkaProducer时配置的broker列表传入
+			 * 该update()方法同时会更新Metadata对象的一些属性，
+			 * 并通知所有MetadataUpdate Listener监听器，自己要开始更新数据了
+			 * 同时唤醒等待Metadata更新完成的线程
+			 */
+			this.metadata.update(Cluster.bootstrap(addresses), time.milliseconds());
             ChannelBuilder channelBuilder = ClientUtils.createChannelBuilder(config.values());
             // 创建NetworkClient网络I/O核心
             NetworkClient client = new NetworkClient(
@@ -495,7 +500,13 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             }
             // 选择合适的分区
             int partition = partition(record, serializedKey, serializedValue, metadata.fetch());
-            int serializedSize = Records.LOG_OVERHEAD + Record.recordSize(serializedKey, serializedValue);
+			/**
+			 * 计算消息记录的总大小
+			 * Records.LOG_OVERHEAD = SIZE_LENGTH（值为4） + OFFSET_LENGTH（值为8）
+			 * Records.LOG_OVERHEAD有SIZE_LENGTH和OFFSET_LENGTH两个字段，分别表示存放消息长度和消息偏移量所需要的字节数
+			 */
+			int serializedSize = Records.LOG_OVERHEAD + Record.recordSize(serializedKey, serializedValue);
+			// 检查消息长度是否合法，不大于maxRequestSize，不大于totalMemorySize，否则会抛出RecordTooLargeException异常
             ensureValidRecordSize(serializedSize);
             tp = new TopicPartition(record.topic(), partition);
             long timestamp = record.timestamp() == null ? time.milliseconds() : record.timestamp();
@@ -554,9 +565,11 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
      */
     private long waitOnMetadata(String topic, long maxWaitMs) throws InterruptedException {
         // add topic to metadata topic list if it is not there already.
+		// 如果Metadata对象的topics集合中没有该topic，就将其加入
         if (!this.metadata.containsTopic(topic))
             this.metadata.add(topic);
 
+        // fetch()返回的是Cluster对象，判断Cluster对象中是否有该topic的分区信息，如果有就可以直接返回
         if (metadata.fetch().partitionsForTopic(topic) != null)
             return 0;
 

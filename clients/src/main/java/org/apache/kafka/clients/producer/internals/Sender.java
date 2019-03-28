@@ -173,7 +173,7 @@ public class Sender implements Runnable {
         // 获取Cluster集群元数据信息
         Cluster cluster = metadata.fetch();
         // get the list of partitions with data ready to send
-		// 获取当前集群中符合发送消息条件的节点集合
+		// 获取当前集群中符合发送消息条件的数据集
         RecordAccumulator.ReadyCheckResult result = this.accumulator.ready(cluster, now);
 
         // if there are any partitions whose leaders are not known yet, force metadata update
@@ -200,6 +200,7 @@ public class Sender implements Runnable {
                                                                          result.readyNodes,
                                                                          this.maxRequestSize,
                                                                          now);
+        // 禁止这些RecordBatch再次被drain操作
         if (guaranteeMessageOrder) {
             // Mute all the partitions drained
             for (List<RecordBatch> batchList : batches.values()) {
@@ -239,7 +240,7 @@ public class Sender implements Runnable {
         // the select time will be the time difference between now and its linger expiry time;
         // otherwise the select time will be the time difference between now and the metadata expiry time;
 		// 使用NetworkClient将KafkaChannel的send字段中保存的ClientRequest发送出去
-        this.client.poll(pollTimeout, now);
+         this.client.poll(pollTimeout, now);
     }
 
     /**

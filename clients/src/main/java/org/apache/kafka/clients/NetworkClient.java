@@ -268,7 +268,7 @@ public class NetworkClient implements KafkaClient {
      */
     @Override
     public List<ClientResponse> poll(long timeout, long now) {
-    	// 更新Metadata
+    	// 每次poll()的时候都会判断是否需要更新Metadata
         long metadataTimeout = metadataUpdater.maybeUpdate(now);
         try {
         	// 执行IO操作
@@ -373,20 +373,26 @@ public class NetworkClient implements KafkaClient {
      */
     @Override
     public Node leastLoadedNode(long now) {
+		// 获取存放在Cluster中的Node节点列表
         List<Node> nodes = this.metadataUpdater.fetchNodes();
         int inflight = Integer.MAX_VALUE;
         Node found = null;
-
+		
+        // 获得随机偏移
         int offset = this.randOffset.nextInt(nodes.size());
         for (int i = 0; i < nodes.size(); i++) {
+        	// 根据随机偏移随机选一个Node
             int idx = (offset + i) % nodes.size();
             Node node = nodes.get(idx);
+            // 获得该Node节点中请求队列的中的请求数量
             int currInflight = this.inFlightRequests.inFlightRequestCount(node.idString());
             if (currInflight == 0 && this.connectionStates.isConnected(node.idString())) {
+            	// 如果该Node节点的请求队列中没有请求，且该Node节点是连接的，就选该节点
                 // if we find an established connection with no in-flight requests we can stop right away
                 return node;
             } else if (!this.connectionStates.isBlackedOut(node.idString(), now) && currInflight < inflight) {
                 // otherwise if this is the best we have found so far, record that
+				// 如果不符合，则重新选择
                 inflight = currInflight;
                 found = node;
             }
@@ -443,7 +449,7 @@ public class NetworkClient implements KafkaClient {
         }
 
         // we disconnected, so we should probably refresh our metadata
-		// 如有需要，更细元数据
+		// 有超时请求，因此需要更新Metadata元数据
         if (nodeIds.size() > 0)
             metadataUpdater.requestUpdate();
     }
@@ -476,6 +482,7 @@ public class NetworkClient implements KafkaClient {
      * @param now The current time
      */
     private void handleCompletedReceives(List<ClientResponse> responses, long now) {
+    	// 遍历completeReceives中的NetworkReceive，completeReceives中存储了接收完成的封装了响应的NetworkReceives对象
         for (NetworkReceive receive : this.selector.completedReceives()) {
         	// 获取返回响应的NodeId
             String source = receive.source();
@@ -507,7 +514,7 @@ public class NetworkClient implements KafkaClient {
         }
         // we got a disconnect so we should probably refresh our metadata and see if that broker is dead
         if (this.selector.disconnected().size() > 0)
-        	// 标识需要更新集群元数据
+        	// 有连接断开了，标识需要更新集群元数据
             metadataUpdater.requestUpdate();
     }
 
@@ -548,6 +555,7 @@ public class NetworkClient implements KafkaClient {
             /* attempt failed, we'll try again after the backoff */
             connectionStates.disconnected(nodeConnectionId, now);
             /* maybe the problem is our metadata, update it */
+			// 如果发起连接失败，可能是由于集群元数据发生了变化，这里会触发一次Metadata的更新
             metadataUpdater.requestUpdate();
             log.debug("Error connecting to node {} at {}:{}:", node.id(), node.host(), node.port(), e);
         }
@@ -606,7 +614,7 @@ public class NetworkClient implements KafkaClient {
                 // highly dependent on the behavior of leastLoadedNode.
 				// 找到负载最小的Node，若没有可用就返回null
                 Node node = leastLoadedNode(now);
-                // 创建并缓存MetadataRequest，等待下次poll()方法发送请求
+                // 将跟新Metadata的请求发送给这个Node；这里只会创建并缓存MetadataRequest，等待下次poll()方法发送请求
                 maybeUpdate(now, node);
             }
 
@@ -656,7 +664,7 @@ public class NetworkClient implements KafkaClient {
             this.metadataFetchInProgress = false;
             // 解析MetadataResponse
             MetadataResponse response = new MetadataResponse(body);
-            // 创建新的Cluster对象
+            // 根据response返回的数据，创建新的Cluster对象
             Cluster cluster = response.cluster();
             // check if any topics metadata failed to get updated
             Map<String, Errors> errors = response.errors();
@@ -679,6 +687,7 @@ public class NetworkClient implements KafkaClient {
          * Create a metadata request for the given topics
          */
         private ClientRequest request(long now, String node, MetadataRequest metadata) {
+			// 注意，此时RequestSend的destination字段的值置为了NodeId
             RequestSend send = new RequestSend(node, nextRequestHeader(ApiKeys.METADATA), metadata.toStruct());
             return new ClientRequest(now, true, send, null, true);
         }
@@ -703,13 +712,15 @@ public class NetworkClient implements KafkaClient {
                 MetadataRequest metadataRequest;
                 // 指定需要更新元数据的Topic
                 if (metadata.needMetadataForAllTopics())
+					// 更新全部主题的元数据
                     metadataRequest = MetadataRequest.allTopics();
                 else
+					// 更新部分主题的元数据
                     metadataRequest = new MetadataRequest(new ArrayList<>(metadata.topics()));
-                // 将MetadataRequest封装成ClientRequest
+                // 将请求更新Metadata的MetadataRequest封装成ClientRequest
                 ClientRequest clientRequest = request(now, nodeConnectionId, metadataRequest);
                 log.debug("Sending metadata request {} to node {}", metadataRequest, node.id());
-                // 缓存请求，在下次poll()操作中会将其发出
+                // 缓存请求，在下次poll()操作中会将其发出，返回的response会在handleCompleteReceives()中处理
                 doSend(clientRequest, now);
             } else if (connectionStates.canConnect(nodeConnectionId, now)) {
                 // we don't have a connection to this node right now, make one

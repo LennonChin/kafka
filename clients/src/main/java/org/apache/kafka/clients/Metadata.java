@@ -136,11 +136,13 @@ public final class Metadata {
         }
         long begin = System.currentTimeMillis();
         long remainingWaitMs = maxWaitMs;
-        // 比较版本号
+        // 比较版本号。当Sender成功更新Metadata之后，version值会加1，否则会一直循环，直到超时
         while (this.version <= lastVersion) {
             if (remainingWaitMs != 0)
+            	// 带有超时机制的线程wait
                 wait(remainingWaitMs);
             long elapsed = System.currentTimeMillis() - begin;
+            // 超时，抛出超时异常
             if (elapsed >= maxWaitMs)
                 throw new TimeoutException("Failed to update metadata after " + maxWaitMs + " ms.");
             remainingWaitMs = maxWaitMs - elapsed;
@@ -191,7 +193,7 @@ public final class Metadata {
         // 更新Cluster字段
         this.cluster = this.needMetadataForAllTopics ? getClusterForCurrentTopics(cluster) : cluster;
 
-        // 唤醒鞥带Metadata更新完成的线程
+        // 唤醒等待Metadata更新完成的线程
         notifyAll();
         log.debug("Updated cluster metadata version {} to {}", this.version, this.cluster);
     }
@@ -201,6 +203,7 @@ public final class Metadata {
      * to avoid retrying immediately.
      */
     public synchronized void failedUpdate(long now) {
+    	// 更新失败的情况下，只会更新lastRefreshMs字段
         this.lastRefreshMs = now;
     }
     
@@ -261,19 +264,24 @@ public final class Metadata {
         void onMetadataUpdate(Cluster cluster);
     }
 
+    // 根据传入的Cluster对象更新数据
     private Cluster getClusterForCurrentTopics(Cluster cluster) {
         Set<String> unauthorizedTopics = new HashSet<>();
         Collection<PartitionInfo> partitionInfos = new ArrayList<>();
         List<Node> nodes = Collections.emptyList();
         if (cluster != null) {
+        	// 记录未授权的主题
             unauthorizedTopics.addAll(cluster.unauthorizedTopics());
+            // 从未授权的主题中移除当前已知可用的主题
             unauthorizedTopics.retainAll(this.topics);
-
+			
+            // 更新partition信息
             for (String topic : this.topics) {
                 partitionInfos.addAll(cluster.partitionsForTopic(topic));
             }
             nodes = cluster.nodes();
         }
+        // 构造新的Cluster
         return new Cluster(nodes, partitionInfos, unauthorizedTopics);
     }
 }

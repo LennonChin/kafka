@@ -83,7 +83,7 @@ public class Selector implements Selectable {
     private final java.nio.channels.Selector nioSelector;
     // 维护了NodeId -> KafkaChannel之间的映射关系，表示生产者客户端与各个Node之间的网络连接。KafkaChannel是在SocketChannel上的又一层封装
     private final Map<String, KafkaChannel> channels;
-    // 记录以及完全发送出去的请求
+    // 记录已经完全发送出去的请求
     private final List<Send> completedSends;
     // 记录完全接收到的请求
     private final List<NetworkReceive> completedReceives;
@@ -367,6 +367,7 @@ public class Selector implements Selectable {
                 if (channel.ready() && key.isReadable() && !hasStagedReceive(channel)) {
                 	// Channel可读，处理OP_READ事件
                     NetworkReceive networkReceive;
+					// 循环接收，直到1个response完全接收到，才会从while循环退出
                     while ((networkReceive = channel.read()) != null)
 					/**
 					 * 读取信息并将读到的NetworkReceive添加到stagedReceives集合中保存
@@ -601,10 +602,13 @@ public class Selector implements Selectable {
      * adds a receive to staged receives
      */
     private void addToStagedReceives(KafkaChannel channel, NetworkReceive receive) {
+    	// 如果stagedReceives中还没有与指定KafkaChannel对应的ArrayDeque，就创建一个新的
         if (!stagedReceives.containsKey(channel))
             stagedReceives.put(channel, new ArrayDeque<NetworkReceive>());
 
+        // 获取stagedReceives中指定KafkaChannel对应的Deque
         Deque<NetworkReceive> deque = stagedReceives.get(channel);
+        // 将接收的NetworkReceive对象添加到该Deque中
         deque.add(receive);
     }
 
@@ -613,15 +617,21 @@ public class Selector implements Selectable {
      */
     private void addToCompletedReceives() {
         if (!this.stagedReceives.isEmpty()) {
+        	// 如果stagedReceives集合不为空，则遍历该集合
             Iterator<Map.Entry<KafkaChannel, Deque<NetworkReceive>>> iter = this.stagedReceives.entrySet().iterator();
             while (iter.hasNext()) {
+            	// 取出对应的键值对
                 Map.Entry<KafkaChannel, Deque<NetworkReceive>> entry = iter.next();
+                // 获取KafkaChannel
                 KafkaChannel channel = entry.getKey();
                 if (!channel.isMute()) {
+                	// 判断KafkaChannel是否是mute状态，如果不是才表示此时KafkaChannel已经完成了读写操作
                     Deque<NetworkReceive> deque = entry.getValue();
+                    // 获取队首networkReceive并添加到completedReceives
                     NetworkReceive networkReceive = deque.poll();
                     this.completedReceives.add(networkReceive);
                     this.sensors.recordBytesReceived(channel.id(), networkReceive.payload().limit());
+                    // 如果队列空了，移除键值对
                     if (deque.isEmpty())
                         iter.remove();
                 }

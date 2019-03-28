@@ -167,7 +167,7 @@ public class KafkaChannel {
     private long receive(NetworkReceive receive) throws IOException {
         return receive.readFrom(transportLayer);
     }
-
+ 
     private boolean send(Send send) throws IOException {
     	// 发送send
         send.writeTo(transportLayer);
