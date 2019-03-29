@@ -439,6 +439,7 @@ public class NetworkClient implements KafkaClient {
      */
     private void handleTimedOutRequests(List<ClientResponse> responses, long now) {
     	// 从inFlightRequests中获取请求超时的Node的集合
+		// requestTimeoutMs由timeout.ms参数决定，但该配置已废弃推荐使用request.timeout.ms配置
         List<String> nodeIds = this.inFlightRequests.getNodesWithTimedOutRequests(now, this.requestTimeoutMs);
         // 遍历Node关闭连接并更新状态
         for (String nodeId : nodeIds) {
@@ -601,14 +602,14 @@ public class NetworkClient implements KafkaClient {
             long timeToNextMetadataUpdate = metadata.timeToNextUpdate(now);
             // 获取下次尝试重新连接服务端的时间戳
 			long timeToNextReconnectAttempt = Math.max(this.lastNoNodeAvailableMs + metadata.refreshBackoff() - now, 0);
-            // 检测metadataFetchInProgress字段，判断是否已经发送了请求
-            long waitForMetadataFetch = this.metadataFetchInProgress ? Integer.MAX_VALUE : 0;
+			// 检测metadataFetchInProgress字段，判断是否已经发送了请求
+			long waitForMetadataFetch = this.metadataFetchInProgress ? Integer.MAX_VALUE : 0;
             // if there is no node available to connect, back off refreshing metadata
 			// 计算当前距离下次可以发送MetadataRequest请求的时间差
             long metadataTimeout = Math.max(Math.max(timeToNextMetadataUpdate, timeToNextReconnectAttempt),
                     waitForMetadataFetch);
-
-            if (metadataTimeout == 0) {
+            
+			if (metadataTimeout == 0) {
             	// 允许发送MetadataRequest请求
                 // Beware that the behavior of this method and the computation of timeouts for poll() are
                 // highly dependent on the behavior of leastLoadedNode.

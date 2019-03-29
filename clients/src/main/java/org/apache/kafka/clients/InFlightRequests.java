@@ -25,7 +25,9 @@ import java.util.Map;
  */
 final class InFlightRequests {
 
+	// 最大允许的正在发送的ClientRequest数量，通过参数max.in.flight.requests.per.connection配置
     private final int maxInFlightRequestsPerConnection;
+	// 键为发送请求的目的Node节点的id，值为发送到该节点的ClientRequest请求的队列
     private final Map<String, Deque<ClientRequest>> requests = new HashMap<String, Deque<ClientRequest>>();
 
     public InFlightRequests(int maxInFlightRequestsPerConnection) {
@@ -102,7 +104,7 @@ final class InFlightRequests {
          * queue为null，
          * 或者queue内没有元素
          * 或者queue的队首元素已经完成了请求，
-         * 或者queue内元素个数没有达到maxInFlightRequestsPerConnection指定的数量
+         * 或者queue内元素个数没有达到maxInFlightRequestsPerConnection（max.in.flight.requests.per.connection）指定的数量
          */
         return queue == null || queue.isEmpty() ||
                (queue.peekFirst().request().completed() && queue.size() < this.maxInFlightRequestsPerConnection);
@@ -150,12 +152,15 @@ final class InFlightRequests {
      * @param requestTimeout max time to wait for the request to be completed
      * @return list of nodes
      */
+    // 获取超时的请求所到达的Node的Id
     public List<String> getNodesWithTimedOutRequests(long now, int requestTimeout) {
         List<String> nodeIds = new LinkedList<String>();
         for (String nodeId : requests.keySet()) {
             if (inFlightRequestCount(nodeId) > 0) {
                 ClientRequest request = requests.get(nodeId).peekLast();
+                // 获取距离发送的时间
                 long timeSinceSend = now - request.sendTimeMs();
+                // 判断是否超时
                 if (timeSinceSend > requestTimeout) {
                     nodeIds.add(nodeId);
                 }

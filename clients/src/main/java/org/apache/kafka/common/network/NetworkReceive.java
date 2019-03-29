@@ -26,9 +26,12 @@ public class NetworkReceive implements Receive {
     public final static String UNKNOWN_SOURCE = "";
     public final static int UNLIMITED = -1;
 
+    // 消息来源Node节点的ID
     private final String source;
+    // 每次需要读取的消息的长度
     private final ByteBuffer size;
     private final int maxSize;
+    // 真正的消息数据
     private ByteBuffer buffer;
 
 
