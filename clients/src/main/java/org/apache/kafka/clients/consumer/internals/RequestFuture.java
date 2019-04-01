@@ -39,9 +39,16 @@ import java.util.List;
  */
 public class RequestFuture<T> {
 
+    // 当前请求是否已完成
     private boolean isDone = false;
+    // 记录请求正常完成时收到的响应
     private T value;
+    // 记录导致请求异常的异常类，与value互斥
     private RuntimeException exception;
+    /**
+     * 用来监听请求完成的情况
+     * RequestFutureListener有onSuccess()和onFailure()两个方法
+     */
     private List<RequestFutureListener<T>> listeners = new ArrayList<>();
 
 
@@ -158,9 +165,13 @@ public class RequestFuture<T> {
      * @param adapter The adapter which does the conversion
      * @param <S> The type of the future adapted to
      * @return The new future
+     *
+     * 将RequestFuture<T>适配为RequestFuture<S>
      */
     public <S> RequestFuture<S> compose(final RequestFutureAdapter<T, S> adapter) {
+        // 适配结果
         final RequestFuture<S> adapted = new RequestFuture<S>();
+        // 在当前的RequestFuture上添加监听器
         addListener(new RequestFutureListener<T>() {
             @Override
             public void onSuccess(T value) {
@@ -176,14 +187,17 @@ public class RequestFuture<T> {
     }
 
     public void chain(final RequestFuture<T> future) {
+        // 添加监听器
         addListener(new RequestFutureListener<T>() {
             @Override
             public void onSuccess(T value) {
+                // 将value传递给下一个RequestFuture
                 future.complete(value);
             }
 
             @Override
             public void onFailure(RuntimeException e) {
+                // 将异常传递给下一个RequestFuture
                 future.raise(e);
             }
         });

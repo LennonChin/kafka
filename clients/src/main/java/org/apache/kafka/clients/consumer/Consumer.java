@@ -52,6 +52,7 @@ public interface Consumer<K, V> extends Closeable {
 
     /**
      * @see KafkaConsumer#assign(Collection)
+     * 用户手动订阅指定的Topic，并且指定消费的分区。该方法与 {@link #subscribe(Collection)} 方法互斥
      */
     public void assign(Collection<TopicPartition> partitions);
 
@@ -72,26 +73,31 @@ public interface Consumer<K, V> extends Closeable {
 
     /**
      * @see KafkaConsumer#commitSync()
+	 * 同步提交偏移量
      */
     public void commitSync();
 
     /**
      * @see KafkaConsumer#commitSync(Map)
+	 * 同步提交指定偏移量
      */
     public void commitSync(Map<TopicPartition, OffsetAndMetadata> offsets);
 
     /**
      * @see KafkaConsumer#commitAsync()
+	 * 异步提交偏移量
      */
     public void commitAsync();
 
     /**
      * @see KafkaConsumer#commitAsync(OffsetCommitCallback)
+	 * 异步提交偏移量，带有回调
      */
     public void commitAsync(OffsetCommitCallback callback);
 
     /**
      * @see KafkaConsumer#commitAsync(Map, OffsetCommitCallback)
+	 * 异步提交指定偏移量，带有回调
      */
     public void commitAsync(Map<TopicPartition, OffsetAndMetadata> offsets, OffsetCommitCallback callback);
 
