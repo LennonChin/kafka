@@ -51,6 +51,7 @@ public interface PartitionAssignor {
      * @param subscriptions Subscriptions from all members provided through {@link #subscription(Set)}
      * @return A map from the members to their respective assignment. This should have one entry
      *         for all members who in the input subscription map.
+     * 完成Partition分配的抽象方法
      */
     Map<String, Assignment> assign(Cluster metadata, Map<String, Subscription> subscriptions);
 
@@ -58,6 +59,7 @@ public interface PartitionAssignor {
     /**
      * Callback which is invoked when a group member receives its assignment from the leader.
      * @param assignment The local member's assignment as provided by the leader in {@link #assign(Cluster, Map)}
+     * 每个消费者收到Leader分配结果时的回调函数
      */
     void onAssignment(Assignment assignment);
 
@@ -69,7 +71,9 @@ public interface PartitionAssignor {
     String name();
 
     class Subscription {
+        // 订阅的Topic集合
         private final List<String> topics;
+        // 用户自定义数据
         private final ByteBuffer userData;
 
         public Subscription(List<String> topics, ByteBuffer userData) {
@@ -97,8 +101,11 @@ public interface PartitionAssignor {
         }
     }
 
+    // 保存了分区的分配结果
     class Assignment {
+        // 分配给某个消费者的TopicPartition集合
         private final List<TopicPartition> partitions;
+        // 用户自定义数据
         private final ByteBuffer userData;
 
         public Assignment(List<TopicPartition> partitions, ByteBuffer userData) {

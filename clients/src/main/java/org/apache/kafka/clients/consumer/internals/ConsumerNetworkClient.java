@@ -396,9 +396,11 @@ public class ConsumerNetworkClient implements Closeable {
 
     protected void failUnsentRequests(Node node, RuntimeException e) {
         // clear unsent requests to node and fail their corresponding futures
+		// 清空该Node对应的ClientRequest
         List<ClientRequest> unsentRequests = unsent.remove(node);
         if (unsentRequests != null) {
             for (ClientRequest request : unsentRequests) {
+            	// 调用raise()方法传递异常
                 RequestFutureCompletionHandler handler = (RequestFutureCompletionHandler) request.callback();
                 handler.raise(e);
             }

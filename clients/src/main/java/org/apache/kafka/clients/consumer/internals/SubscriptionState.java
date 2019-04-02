@@ -44,41 +44,60 @@ import java.util.regex.Pattern;
  * This class also maintains a cache of the latest commit position for each of the assigned
  * partitions. This is updated through {@link #committed(TopicPartition, OffsetAndMetadata)} and can be used
  * to set the initial fetch position (e.g. {@link Fetcher#resetOffset(TopicPartition)}.
+ * 用于追踪TopicPartition与offset的对应关系
  */
 public class SubscriptionState {
 
+    // 订阅模式枚举
     private enum SubscriptionType {
-        NONE, AUTO_TOPICS, AUTO_PATTERN, USER_ASSIGNED
+        NONE,  // 初始值
+        AUTO_TOPICS, // 根据指定的Topic名字进行订阅，自动分配分区
+        AUTO_PATTERN, // 按照指定的正则表达式匹配Topic进行订阅，自动分配分区
+        USER_ASSIGNED // 用户手动指定消费者消费的Topic及分区编号
     };
 
     /* the type of subscription */
+    // 订阅模式
     private SubscriptionType subscriptionType;
 
     /* the pattern user has requested */
+    // 使用AUTO_PATTERN正则匹配时，该字段记录了正则表达式
     private Pattern subscribedPattern;
 
     /* the list of topics the user has requested */
+    // 使用AUTO_TOPICS或AUTO_PATTERN模式时，使用该集合记录所有订阅的Topic
     private final Set<String> subscription;
 
     /* the list of topics the group has subscribed to (set only for the leader on join group completion) */
+    // Group Leader使用该集合记录Group中所有消费者订阅的Topic，其他Follower只记录了自己订阅的Topic
     private final Set<String> groupSubscription;
 
     /* the list of partitions the user has requested */
+    // 使用USER_ASSIGNED模式时，此集合记录了分配给当前消费者的TopicPartition集合，与subscription集合互斥
     private final Set<TopicPartition> userAssignment;
 
     /* the list of partitions currently assigned */
+    // 此集合记录了每个TopicPartition的消费状态
     private final Map<TopicPartition, TopicPartitionState> assignment;
 
     /* do we need to request a partition assignment from the coordinator? */
+    // 是否需要进行一次分区分配
     private boolean needsPartitionAssignment;
 
     /* do we need to request the latest committed offsets from the coordinator? */
+    /**
+     * 是否需要从GroupCoordinator获取最近提交的offset，
+     * 当出现异步提交offset操作或者Rebalance操作刚完成时会将其设置为true，
+     * 成功获取最近提交的offset之后会设置为false
+     */
     private boolean needsFetchCommittedOffsets;
 
     /* Default offset reset strategy */
+    // 默认的Offset重置策略
     private final OffsetResetStrategy defaultResetStrategy;
 
     /* Listener to be invoked when assignment changes */
+    // 用于监听分区分配操作的监听器
     private ConsumerRebalanceListener listener;
 
     private static final String SUBSCRIPTION_EXCEPTION_MESSAGE =
@@ -91,9 +110,11 @@ public class SubscriptionState {
      * @param type The given subscription type
      */
     private void setSubscriptionType(SubscriptionType type) {
+        // 只有在NONE模式下才可以指定为其他格式
         if (this.subscriptionType == SubscriptionType.NONE)
             this.subscriptionType = type;
         else if (this.subscriptionType != type)
+            // 如果已经设置过一次，再次设置为不同的模式会报错
             throw new IllegalStateException(SUBSCRIPTION_EXCEPTION_MESSAGE);
     }
 
@@ -110,24 +131,33 @@ public class SubscriptionState {
     }
 
     public void subscribe(Collection<String> topics, ConsumerRebalanceListener listener) {
+        // 指定的重均衡监听器不可为空
         if (listener == null)
             throw new IllegalArgumentException("RebalanceListener cannot be null");
 
+        // 设置订阅模式
         setSubscriptionType(SubscriptionType.AUTO_TOPICS);
 
         this.listener = listener;
 
+        // 修改subscription字段，记录订阅的分区
         changeSubscription(topics);
     }
 
+    // 改变subscription字段
     public void changeSubscription(Collection<String> topicsToSubscribe) {
+        // 订阅的主题有变化
         if (!this.subscription.equals(new HashSet<>(topicsToSubscribe))) {
+            // 清空原有的订阅
             this.subscription.clear();
+            // 添加新的
             this.subscription.addAll(topicsToSubscribe);
             this.groupSubscription.addAll(topicsToSubscribe);
+            // 设置需要重新分配分区
             this.needsPartitionAssignment = true;
 
             // Remove any assigned partitions which are no longer subscribed to
+            // 同步assignment，将没有再订阅的主题移除
             for (Iterator<TopicPartition> it = assignment.keySet().iterator(); it.hasNext(); ) {
                 TopicPartition tp = it.next();
                 if (!subscription.contains(tp.topic()))
@@ -378,10 +408,15 @@ public class SubscriptionState {
         return listener;
     }
 
+    // 表示TopicPartition的消费状态
     private static class TopicPartitionState {
+        // 记录了下次要从Kafka服务端获取的消息的offset
         private Long position; // last consumed position
+        // 记录了最近一次提交的offset
         private OffsetAndMetadata committed;  // last committed position
+        // 记录了当前TopicPartition是否处于暂停状态，用于Consumer接口的pause()方法
         private boolean paused;  // whether this partition has been paused by the user
+        // 重置position的策略，该字段是否为空代表是否需要重置position的值
         private OffsetResetStrategy resetStrategy;  // the strategy to use if the offset needs resetting
 
         public TopicPartitionState() {

@@ -62,18 +62,43 @@ import java.util.Set;
 public final class ConsumerCoordinator extends AbstractCoordinator {
 
     private static final Logger log = LoggerFactory.getLogger(ConsumerCoordinator.class);
-
+    
+    /**
+     * 在消费者发送的JoinGroupRequest请求中包含了消费者自身支持的PartitionAssignor信息，
+     * GroupCoordinator从所有消费者都支持的分配策略中选择一个，通知Leader使用此分配策略进行分区分配。
+     * 此字段的值通过partition.assignment.strategy参数配置，可以配置多个。
+     */
     private final List<PartitionAssignor> assignors;
+    // Kafka集群元数据
     private final Metadata metadata;
     private final ConsumerCoordinatorMetrics sensors;
     private final SubscriptionState subscriptions;
     private final OffsetCommitCallback defaultOffsetCommitCallback;
+    // 是否开启了自动提交offset
     private final boolean autoCommitEnabled;
+    // 自动提交offset的定时任务
     private final AutoCommitTask autoCommitTask;
+    // 拦截器集合
     private final ConsumerInterceptors<?, ?> interceptors;
+    // 是否排除内部Topic
     private final boolean excludeInternalTopics;
-
+    /**
+     * 用来存储Metadata的快照信息，主要用来检测Topic是否发生了分区数量的变化。
+     * 在ConsumerCoordinator的构造方法中，会为Metadata添加一个监听器，当Metadata更新时会做下面几件事：
+     * - 如果是AUTO_PATTERN模式，则使用用户自定义的正则表达式过滤Topic，
+     *      得到需要订阅的Topic集合后，设置到SubscriptionState的subscription集合和groupSubscription集合中。
+     * - 如果是AUTO_PATTERN或AUTO_TOPICS模式，为当前Metadata做一个快照，这个快照底层是使用HashMap记录每个Topic中Partition的个数。
+     *      将新旧快照进行比较，发生变化的话，则表示消费者订阅的Topic发生分区数量变化，
+     *      则将SubscriptionState的needsPartitionAssignment字段置为true，需要重新进行分区分配。
+     * - 使用metadataSnapshot字段记录变化后的新快照。
+     */
     private MetadataSnapshot metadataSnapshot;
+    /**
+     * 用来存储Metadata的快照信息，不过是用来检测Partition分配的过程中有没有发生分区数量变化。
+     * 具体是在Leader消费者开始分区分配操作前，使用此字段记录Metadata快照；
+     * 收到SyncGroupResponse后，会比较此字段记录的快照与当前Metadata是否发生变化。
+     * 如果发生变化，则要重新进行分区分配。在后面的介绍中还会分析上述过程。
+     */
     private MetadataSnapshot assignmentSnapshot;
 
     /**
@@ -146,9 +171,9 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         this.metadata.addListener(new Metadata.Listener() {
             @Override
             public void onMetadataUpdate(Cluster cluster) {
-
+                // AUTO_PATTERN模式的处理
                 if (subscriptions.hasPatternSubscription()) {
-
+                    // 权限验证
                     Set<String> unauthorizedTopics = new HashSet<String>();
                     for (String topic : cluster.unauthorizedTopics()) {
                         if (filterTopic(topic))
@@ -157,23 +182,33 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                     if (!unauthorizedTopics.isEmpty())
                         throw new TopicAuthorizationException(unauthorizedTopics);
 
+                    // 定义一个List装载需要订阅的主题
                     final List<String> topicsToSubscribe = new ArrayList<>();
-
+                    // 遍历Cluster存储的集群元数据中的Topic信息
                     for (String topic : cluster.topics())
+                        // 过滤Topic将匹配的Topic加入到topicsToSubscribe
                         if (filterTopic(topic))
                             topicsToSubscribe.add(topic);
 
+                    // 更新subscriptions集合、groupSubscription集合、assignment集合
                     subscriptions.changeSubscription(topicsToSubscribe);
+                    // 更新Metadata需要记录元数据的Topic集合
                     metadata.setTopics(subscriptions.groupSubscription());
                 } else if (!cluster.unauthorizedTopics().isEmpty()) {
+                    // 当非AUTO_PATTERN模式时，如果非授权的主题不为空，则抛出异常
                     throw new TopicAuthorizationException(new HashSet<>(cluster.unauthorizedTopics()));
                 }
 
                 // check if there are any changes to the metadata which should trigger a rebalance
+                // 检测是否为AUTO_PATTERN或AUTO_TOPICS模式
                 if (subscriptions.partitionsAutoAssigned()) {
+                    // 根据新的subscriptions和cluster数据创建快照
                     MetadataSnapshot snapshot = new MetadataSnapshot(subscriptions, cluster);
+                    // 比较新旧快照，如果不相等，则更新快照，并标识需要重新进行分区分配
                     if (!snapshot.equals(metadataSnapshot)) {
+                        // 记录快照
                         metadataSnapshot = snapshot;
+                        // 更新needsPartitionAssignment字段为true，表示需要重新进行分区分配
                         subscriptions.needReassignment();
                     }
                 }
