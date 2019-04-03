@@ -26,7 +26,9 @@ import java.nio.ByteBuffer;
 public class SyncGroupResponse extends AbstractRequestResponse {
 
     private static final Schema CURRENT_SCHEMA = ProtoUtils.currentResponseSchema(ApiKeys.SYNC_GROUP.id);
+    // 错误码，short类型
     public static final String ERROR_CODE_KEY_NAME = "error_code";
+    // 分配给当前消费者的分区，byte数组类型
     public static final String MEMBER_ASSIGNMENT_KEY_NAME = "member_assignment";
 
     /**

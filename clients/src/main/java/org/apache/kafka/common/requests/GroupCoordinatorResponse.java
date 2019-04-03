@@ -40,7 +40,9 @@ public class GroupCoordinatorResponse extends AbstractRequestResponse {
     private static final String HOST_KEY_NAME = "host";
     private static final String PORT_KEY_NAME = "port";
 
+    // 错误码
     private final short errorCode;
+    // Coordinator的节点ID
     private final Node node;
 
     public GroupCoordinatorResponse(short errorCode, Node node) {

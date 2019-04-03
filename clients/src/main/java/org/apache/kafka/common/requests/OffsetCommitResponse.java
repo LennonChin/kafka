@@ -31,11 +31,14 @@ public class OffsetCommitResponse extends AbstractRequestResponse {
     private static final String RESPONSES_KEY_NAME = "responses";
 
     // topic level fields
+    // topic名称，String类型
     private static final String TOPIC_KEY_NAME = "topic";
     private static final String PARTITIONS_KEY_NAME = "partition_responses";
 
     // partition level fields
+    // 分区编号，int类型
     private static final String PARTITION_KEY_NAME = "partition";
+    // 错误码，short类型
     private static final String ERROR_CODE_KEY_NAME = "error_code";
 
     /**

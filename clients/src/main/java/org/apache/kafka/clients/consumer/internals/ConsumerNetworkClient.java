@@ -128,7 +128,7 @@ public class ConsumerNetworkClient implements Closeable {
         RequestHeader header = client.nextRequestHeader(api);
         // 创建RequestSend对象
         RequestSend send = new RequestSend(node.idString(), header, request.toStruct());
-        // 添加到unsent集合
+        // 添加到unsent中，等待发送
         put(node, new ClientRequest(now, true, send, future));
         return future;
     }
@@ -167,7 +167,9 @@ public class ConsumerNetworkClient implements Closeable {
      * until it has completed).
      */
     public void ensureFreshMetadata() {
+    	// 强制更新Metadata，判断是否已经到了更新时间
         if (this.metadata.updateRequested() || this.metadata.timeToNextUpdate(time.milliseconds()) == 0)
+        	// 更新元数据，会阻塞
             awaitMetadataUpdate();
     }
 
@@ -488,6 +490,7 @@ public class ConsumerNetworkClient implements Closeable {
      * @param node The node to connect to
      */
     public void tryConnect(Node node) {
+    	// 检查Node是否准备好，如果准备好了就尝试连接
         client.ready(node, time.milliseconds());
     }
 

@@ -127,6 +127,7 @@ public class JoinGroupResponse extends AbstractRequestResponse {
         return leaderId;
     }
 
+    // 判断自己是否是Leader，将MemberID与LeaderID进行比较
     public boolean isLeader() {
         return memberId.equals(leaderId);
     }

@@ -172,12 +172,15 @@ public class SubscriptionState {
      * @param topics The topics to add to the group subscription
      */
     public void groupSubscribe(Collection<String> topics) {
+        // 检查订阅模式是否是USER_ASSIGINED，如果是则抛出异常
         if (this.subscriptionType == SubscriptionType.USER_ASSIGNED)
             throw new IllegalStateException(SUBSCRIPTION_EXCEPTION_MESSAGE);
+        // 将传入的主题添加到groupSubscription中进行记录
         this.groupSubscription.addAll(topics);
     }
 
     public void needReassignment() {
+        // 去除groupSubscription中除subscription集合所有元素之外的元素
         this.groupSubscription.retainAll(subscription);
         this.needsPartitionAssignment = true;
     }
@@ -208,10 +211,14 @@ public class SubscriptionState {
      * note this is different from {@link #assignFromUser(Collection)} which directly set the assignment from user inputs
      */
     public void assignFromSubscribed(Collection<TopicPartition> assignments) {
+        // 遍历传入的assignments，判断当前subscription是否包含指定的主题
         for (TopicPartition tp : assignments)
             if (!this.subscription.contains(tp.topic()))
+                // 如果不包含，抛出异常
                 throw new IllegalArgumentException("Assigned partition " + tp + " for non-subscribed topic.");
+        // 清空assignment
         this.assignment.clear();
+        // 遍历assignments，将TopicPartition作为键，新的TopicPartitionState对象作为值，添加到assignment字典中
         for (TopicPartition tp: assignments)
             addAssignedPartition(tp);
         this.needsPartitionAssignment = false;
@@ -333,9 +340,12 @@ public class SubscriptionState {
 
     public Map<TopicPartition, OffsetAndMetadata> allConsumed() {
         Map<TopicPartition, OffsetAndMetadata> allConsumed = new HashMap<>();
+        // 遍历assignment
         for (Map.Entry<TopicPartition, TopicPartitionState> entry : assignment.entrySet()) {
+            // 获取主题分区状态
             TopicPartitionState state = entry.getValue();
             if (state.hasValidPosition())
+                // 如果状态中记录了下次要从Kafka服务端获取的消息的offset，就将其添加到allConsumed中
                 allConsumed.put(entry.getKey(), new OffsetAndMetadata(state.position));
         }
         return allConsumed;

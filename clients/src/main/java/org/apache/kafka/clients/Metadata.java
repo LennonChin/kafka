@@ -164,9 +164,12 @@ public final class Metadata {
      * @param topics
      */
     public synchronized void setTopics(Collection<String> topics) {
+        // 如果Metadata中已知的主题没有包含传入的主题，则需要更新Metadata元数据
         if (!this.topics.containsAll(topics))
             requestUpdate();
+        // 清空原有的已知主题
         this.topics.clear();
+        // 更新已知主题
         this.topics.addAll(topics);
     }
 
