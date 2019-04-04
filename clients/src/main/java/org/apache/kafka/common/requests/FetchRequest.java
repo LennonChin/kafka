@@ -30,8 +30,11 @@ public class FetchRequest extends AbstractRequest {
 
     public static final int CONSUMER_REPLICA_ID = -1;
     private static final Schema CURRENT_SCHEMA = ProtoUtils.currentRequestSchema(ApiKeys.FETCH.id);
+    // 用来标识Follower的ID，Consumer和Follower都会使用FetchRequest从Leader那里拉取消息，Consumer默认是-1，int类型
     private static final String REPLICA_ID_KEY_NAME = "replica_id";
+    // 请求最大的等待时间，int类型
     private static final String MAX_WAIT_KEY_NAME = "max_wait_time";
+    // 响应的最小负载，int类型
     private static final String MIN_BYTES_KEY_NAME = "min_bytes";
     private static final String TOPICS_KEY_NAME = "topics";
 
@@ -41,7 +44,9 @@ public class FetchRequest extends AbstractRequest {
 
     // partition level field names
     private static final String PARTITION_KEY_NAME = "partition";
+    // 需要fetch的消息offset，long类型
     private static final String FETCH_OFFSET_KEY_NAME = "fetch_offset";
+    // 每次fetch的最大字节数，int类型
     private static final String MAX_BYTES_KEY_NAME = "max_bytes";
 
     private final int replicaId;

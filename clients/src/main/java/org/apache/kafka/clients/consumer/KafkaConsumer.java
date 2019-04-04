@@ -934,20 +934,26 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      *             topics or to the configured groupId
      * @throws org.apache.kafka.common.KafkaException for any other unrecoverable errors (e.g. invalid groupId or
      *             session timeout, errors deserializing key/value pairs, or any new error cases in future versions)
+	 * 进行消息消费的整个流程
      */
     @Override
     public ConsumerRecords<K, V> poll(long timeout) {
+    	// 检查是否有并发操作
         acquire();
         try {
+        	// 检查超时参数
             if (timeout < 0)
                 throw new IllegalArgumentException("Timeout must not be negative");
 
             // poll for new data until the timeout expires
+			// 记录当前时间用于计算是否超时
             long start = time.milliseconds();
             long remaining = timeout;
             do {
+            	// 调用pollOnce()方法拉取消息
                 Map<TopicPartition, List<ConsumerRecord<K, V>>> records = pollOnce(remaining);
                 if (!records.isEmpty()) {
+					// 检查是否有消息返回
                     // before returning the fetched records, we can send off the next round of fetches
                     // and avoid block waiting for their responses to enable pipelining while the user
                     // is handling the fetched records.
@@ -955,21 +961,28 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                     // NOTE: since the consumed position has already been updated, we must not allow
                     // wakeups or any other errors to be triggered prior to returning the fetched records.
                     // Additionally, pollNoWakeup does not allow automatic commits to get triggered.
+					// 处理拉取返回的消息之前，先发送一次FetchRequest，使消息响应处理与请求的网络传输并行处理，以提高性能
                     fetcher.sendFetches();
+                    // 将FetchRequest发送出去，不会阻塞，不能被中断，不会执行定时任务
                     client.pollNoWakeup();
 
+                    // 处理拦截器操作
                     if (this.interceptors == null)
+                    	// 没有拦截器，直接返回ConsumerRecords对象
                         return new ConsumerRecords<>(records);
                     else
+                    	// 使用拦截器处理后返回
                         return this.interceptors.onConsume(new ConsumerRecords<>(records));
                 }
-
+                // 计算已用时间
                 long elapsed = time.milliseconds() - start;
+                // 计算剩余时间
                 remaining = timeout - elapsed;
             } while (remaining > 0);
-
+			// 没有拉取到消息，返回空记录
             return ConsumerRecords.empty();
         } finally {
+        	// 释放重入次数
             release();
         }
     }
@@ -982,32 +995,45 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      */
     private Map<TopicPartition, List<ConsumerRecord<K, V>>> pollOnce(long timeout) {
         // TODO: Sub-requests should take into account the poll timeout (KAFKA-1894)
+		// 确保GroupCoordinator已就绪，如果没有就绪会一直阻塞
         coordinator.ensureCoordinatorReady();
 
+        // 如果是AUTO_TOPICS或AUTO_PATTERN订阅模式
         // ensure we have partitions assigned if we expect to
         if (subscriptions.partitionsAutoAssigned())
+        	// 完成Rebalance操作
             coordinator.ensurePartitionAssignment();
 
         // fetch positions if we have partitions we're subscribed to that we
         // don't know the offset for
+		/**
+		 * 恢复SubscriptionState中对应的TopicPartitionState状态
+		 * 主要是committed字段和position字段
+		 */
         if (!subscriptions.hasAllFetchPositions())
             updateFetchPositions(this.subscriptions.missingFetchPositions());
 
         long now = time.milliseconds();
 
         // execute delayed tasks (e.g. autocommits and heartbeats) prior to fetching records
+		// 执行HeartbeatTask和AutoCommitTask定时任务
         client.executeDelayedTasks(now);
 
         // init any new fetches (won't resend pending fetches)
+		// 尝试从completedFetches缓存中解析消息
         Map<TopicPartition, List<ConsumerRecord<K, V>>> records = fetcher.fetchedRecords();
 
         // if data is available already, e.g. from a previous network client poll() call to commit,
         // then just return it immediately
+		// 判断缓存中是否有消息
         if (!records.isEmpty())
             return records;
 
+        // 创建并缓存FetchRequest请求
         fetcher.sendFetches();
+        // 发送FetchRequest请求
         client.poll(timeout, now);
+        // 从completedFetches缓存中解析消息
         return fetcher.fetchedRecords();
     }
 
@@ -1434,12 +1460,23 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      * supported).
      * @throws IllegalStateException if the consumer has been closed
      * @throws ConcurrentModificationException if another thread already has the lock
+	 * 检测是否有其他线程尝试并发操作KafkaConsumer
      */
     private void acquire() {
+    	// 确保KafkaConsumer没有被关闭
         ensureNotClosed();
+        // 当前线程ID
         long threadId = Thread.currentThread().getId();
-        if (threadId != currentThread.get() && !currentThread.compareAndSet(NO_CURRENT_THREAD, threadId))
+		/**
+		 * 比对当前线程与currentThread保存的线程的ID
+		 * 如果不同，尝试用CAS方式更新currentThread为当前线程的ID
+		 * 需要注意的是，只有在currentThread的值为NO_CURRENT_THREAD（-1）时才可能修改成功
+		 * 也即是，只有在之前没有线程操作KafkaConsumer时，才能修改成功，以防止多线程操作KafkaConsumer
+		 */
+		if (threadId != currentThread.get() && !currentThread.compareAndSet(NO_CURRENT_THREAD, threadId))
+			// 抛出ConcurrentModificationException异常
             throw new ConcurrentModificationException("KafkaConsumer is not safe for multi-threaded access");
+		// 当前使用KafkaConsumer的线程的重入次数加1
         refcount.incrementAndGet();
     }
 
@@ -1447,6 +1484,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      * Release the light lock protecting the consumer from multi-threaded access.
      */
     private void release() {
+    	// 当前使用KafkaConsumer的线程的重入次数为0时，才表示KafkaConsumer被释放，将currentThread置为NO_CURRENT_THREAD
         if (refcount.decrementAndGet() == 0)
             currentThread.set(NO_CURRENT_THREAD);
     }

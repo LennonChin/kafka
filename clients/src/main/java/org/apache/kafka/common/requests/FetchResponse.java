@@ -49,7 +49,7 @@ public class FetchResponse extends AbstractRequestResponse {
     // Default throttle time
     private static final int DEFAULT_THROTTLE_TIME = 0;
 
-  /**
+    /**
      * Possible error code:
      *
      *  OFFSET_OUT_OF_RANGE (1)
@@ -59,7 +59,9 @@ public class FetchResponse extends AbstractRequestResponse {
      *  UNKNOWN (-1)
      */
 
+    // Leader的high_watermark
     private static final String HIGH_WATERMARK_KEY_NAME = "high_watermark";
+    // fetch到的消息数据
     private static final String RECORD_SET_KEY_NAME = "record_set";
 
     public static final long INVALID_HIGHWATERMARK = -1L;

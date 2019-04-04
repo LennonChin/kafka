@@ -309,6 +309,7 @@ public class SubscriptionState {
         this.needsFetchCommittedOffsets = false;
     }
 
+    // 更新tp分区的position为offset
     public void seek(TopicPartition tp, long offset) {
         assignedState(tp).seek(offset);
     }
@@ -317,9 +318,16 @@ public class SubscriptionState {
         return this.assignment.keySet();
     }
 
+    // 获取分配给当前消费者的可拉取分区的信息
     public Set<TopicPartition> fetchablePartitions() {
         Set<TopicPartition> fetchable = new HashSet<>();
+        // 遍历assignment
         for (Map.Entry<TopicPartition, TopicPartitionState> entry : assignment.entrySet()) {
+            /**
+             * 判断是否可以拉取，isFetchable()为true有两个条件
+             * 1. 对应的TopicPartition未被标记为暂停状态；
+             * 2. 对应的TopicPartitionState的position不为null
+             */
             if (entry.getValue().isFetchable())
                 fetchable.add(entry.getKey());
         }
@@ -355,6 +363,7 @@ public class SubscriptionState {
         assignedState(partition).awaitReset(offsetResetStrategy);
     }
 
+    // 使用默认策略更新position
     public void needOffsetReset(TopicPartition partition) {
         needOffsetReset(partition, defaultResetStrategy);
     }
@@ -471,7 +480,12 @@ public class SubscriptionState {
         private void resume() {
             this.paused = false;
         }
-
+    
+        /**
+         * 判断是否可以拉取，isFetchable()为true有两个条件
+         * 1. 对应的TopicPartition未被标记为暂停状态；
+         * 2. 对应的TopicPartitionState的position不为null
+         */
         private boolean isFetchable() {
             return !paused && hasValidPosition();
         }
