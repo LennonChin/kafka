@@ -150,10 +150,14 @@ public class RequestFuture<T> {
      * @param listener
      */
     public void addListener(RequestFutureListener<T> listener) {
+        // 当前请求是否已经完成
         if (isDone) {
+            // 已完成
             if (exception != null)
+                // 如果有异常，直接调用listener的onFailure()
                 listener.onFailure(exception);
             else
+                // 无异常，调用listener的onSuccess()
                 listener.onSuccess(value);
         } else {
             this.listeners.add(listener);

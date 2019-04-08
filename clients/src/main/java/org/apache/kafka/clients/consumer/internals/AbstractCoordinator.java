@@ -124,12 +124,16 @@ public abstract class AbstractCoordinator implements Closeable {
                                long retryBackoffMs) {
         this.client = client;
         this.time = time;
-        this.generation = OffsetCommitRequest.DEFAULT_GENERATION_ID;
-        this.memberId = JoinGroupRequest.UNKNOWN_MEMBER_ID;
+        // 年代信息
+        this.generation = OffsetCommitRequest.DEFAULT_GENERATION_ID; // -1
+        // Consumer Member ID
+        this.memberId = JoinGroupRequest.UNKNOWN_MEMBER_ID; // ""
         this.groupId = groupId;
         this.coordinator = null;
         this.sessionTimeoutMs = sessionTimeoutMs;
+        // 心跳操作辅助对象
         this.heartbeat = new Heartbeat(this.sessionTimeoutMs, heartbeatIntervalMs, time.milliseconds());
+        // 心跳任务
         this.heartbeatTask = new HeartbeatTask();
         this.sensors = new GroupCoordinatorMetrics(metrics, metricGrpPrefix);
         this.retryBackoffMs = retryBackoffMs;

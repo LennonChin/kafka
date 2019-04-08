@@ -497,7 +497,11 @@ public class ConsumerNetworkClient implements Closeable {
     public static class RequestFutureCompletionHandler
             extends RequestFuture<ClientResponse>
             implements RequestCompletionHandler {
-
+    
+        /**
+         * 该方法重写了RequestCompletionHandler接口的
+         * RequestCompletionHandler接口只声明了这一个方法
+         */
         @Override
         public void onComplete(ClientResponse response) {
             if (response.wasDisconnected()) {
@@ -511,7 +515,7 @@ public class ConsumerNetworkClient implements Closeable {
                 // 调用RequestFuture的raise()方法，传递DisconnectException异常
                 raise(DisconnectException.INSTANCE);
             } else {
-            	// 否则正常完成回调
+            	// 否则正常完成回调，该方法来自RequestFuture类
                 complete(response);
             }
         }

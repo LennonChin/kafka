@@ -120,6 +120,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                                long autoCommitIntervalMs,
                                ConsumerInterceptors<?, ?> interceptors,
                                boolean excludeInternalTopics) {
+        // 调用父类AbstractCoordinator的构造器
         super(client,
                 groupId,
                 sessionTimeoutMs,
@@ -130,24 +131,35 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                 retryBackoffMs);
         this.metadata = metadata;
 
+        // 设置强制更新集群元数据
         this.metadata.requestUpdate();
+        // 根据消费者的SubscriptionState实例和集群元数据构建元数据快照
         this.metadataSnapshot = new MetadataSnapshot(subscriptions, metadata.fetch());
+        // 记录消费者的SubscriptionState实例
         this.subscriptions = subscriptions;
+        // offset提交回调
         this.defaultOffsetCommitCallback = defaultOffsetCommitCallback;
+        // 是否自动提交offset
         this.autoCommitEnabled = autoCommitEnabled;
+        // 分区分配器集合
         this.assignors = assignors;
 
+        // 添加Metadata监听器
         addMetadataListener();
 
         if (autoCommitEnabled) {
+            // 如果设置了自动提交offset，根据配置提交间隔时间，创建AutoCommitTask任务
             this.autoCommitTask = new AutoCommitTask(autoCommitIntervalMs);
+            // 启动AutoCommitTask
             this.autoCommitTask.reschedule();
         } else {
             this.autoCommitTask = null;
         }
 
         this.sensors = new ConsumerCoordinatorMetrics(metrics, metricGrpPrefix);
+        // 拦截器集合
         this.interceptors = interceptors;
+        // 是否排除Kafka内部使用的Topic
         this.excludeInternalTopics = excludeInternalTopics;
     }
 
@@ -553,6 +565,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
 
     // 定时任务，用于周期性地调用commitOffsetAsync()方法自动提交offset
     private class AutoCommitTask implements DelayedTask {
+        // 提交间隔时间
         private final long interval;
 
         public AutoCommitTask(long interval) {
@@ -581,6 +594,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                 return;
             }
 
+            // 异步提交偏移量
             commitOffsetsAsync(subscriptions.allConsumed(), new OffsetCommitCallback() {
             	// 在提交成功的回调中重新规划下一次提交计划
                 @Override

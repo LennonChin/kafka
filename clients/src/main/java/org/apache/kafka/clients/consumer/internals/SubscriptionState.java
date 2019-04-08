@@ -282,7 +282,9 @@ public class SubscriptionState {
         return this.groupSubscription;
     }
 
+    // 获取tp对应的TopicPartitionState对象
     private TopicPartitionState assignedState(TopicPartition tp) {
+        // 从assignment字典中根据键获取
         TopicPartitionState state = this.assignment.get(tp);
         if (state == null)
             throw new IllegalStateException("No current assignment for partition " + tp);
@@ -412,6 +414,7 @@ public class SubscriptionState {
     }
 
     public void pause(TopicPartition tp) {
+        // 获取tp对应的TopicPartitionState，调用pause()方法
         assignedState(tp).pause();
     }
 
@@ -454,29 +457,36 @@ public class SubscriptionState {
             return resetStrategy != null;
         }
 
+        // position是否合法
         public boolean hasValidPosition() {
             return position != null;
         }
 
+        // 设置下次要从Kafka服务端获取的消息的offset
         private void seek(long offset) {
             this.position = offset;
             this.resetStrategy = null;
         }
 
+        // 设置position值
         private void position(long offset) {
+            // 只有在position合法时才可以设置
             if (!hasValidPosition())
                 throw new IllegalStateException("Cannot set a new position without a valid current position");
             this.position = offset;
         }
 
+        // 设置最近一次提交的offset
         private void committed(OffsetAndMetadata offset) {
             this.committed = offset;
         }
 
+        // 暂停当前主题分区的消费
         private void pause() {
             this.paused = true;
         }
 
+        // 重启当前主题分区的消费
         private void resume() {
             this.paused = false;
         }

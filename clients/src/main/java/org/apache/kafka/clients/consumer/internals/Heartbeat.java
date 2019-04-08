@@ -30,6 +30,7 @@ public final class Heartbeat {
     public Heartbeat(long timeout,
                      long interval,
                      long now) {
+        // 心跳间隔必须大于超时时间
         if (interval >= timeout)
             throw new IllegalArgumentException("Heartbeat must be set lower than the session timeout");
 
@@ -56,11 +57,14 @@ public final class Heartbeat {
 
     // 计算下次发送心跳的时间
     public long timeToNextHeartbeat(long now) {
+        // 当前距离上次发送心跳的时间
         long timeSinceLastHeartbeat = now - Math.max(lastHeartbeatSend, lastSessionReset);
 
         if (timeSinceLastHeartbeat > interval)
+            // 如果间隔时间大于设置的心跳间隔时间，说明时间到了，要发送心跳了，返回0
             return 0;
         else
+            // 否则计算还需要等待的时间
             return interval - timeSinceLastHeartbeat;
     }
 
