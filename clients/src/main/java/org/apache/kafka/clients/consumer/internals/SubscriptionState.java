@@ -130,6 +130,7 @@ public class SubscriptionState {
         this.subscriptionType = SubscriptionType.NONE;
     }
 
+    // 根据主题集合及特定的重均衡监听器来订阅主题
     public void subscribe(Collection<String> topics, ConsumerRebalanceListener listener) {
         // 指定的重均衡监听器不可为空
         if (listener == null)
@@ -224,12 +225,16 @@ public class SubscriptionState {
         this.needsPartitionAssignment = false;
     }
 
+    // 根据正则表达式匹配主题，及特定的重均衡监听器来订阅主题
     public void subscribe(Pattern pattern, ConsumerRebalanceListener listener) {
+        // 检查监听器
         if (listener == null)
             throw new IllegalArgumentException("RebalanceListener cannot be null");
 
+        // 设置订阅模式
         setSubscriptionType(SubscriptionType.AUTO_PATTERN);
 
+        // 记录参数
         this.listener = listener;
         this.subscribedPattern = pattern;
     }

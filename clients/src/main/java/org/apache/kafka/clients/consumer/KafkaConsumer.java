@@ -500,6 +500,7 @@ import java.util.regex.Pattern;
 public class KafkaConsumer<K, V> implements Consumer<K, V> {
 
     private static final Logger log = LoggerFactory.getLogger(KafkaConsumer.class);
+    // 标识没有线程使用过当前KafkaConsumer实例
     private static final long NO_CURRENT_THREAD = -1L;
     // Client的ID生成器
     private static final AtomicInteger CONSUMER_CLIENT_ID_SEQUENCE = new AtomicInteger(1);
@@ -824,20 +825,26 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      * @param topics The list of topics to subscribe to
      * @param listener Non-null listener instance to get notifications on partition assignment/revocation for the
      *                 subscribed topics
+     * 订阅主题，主题以集合形式传入，并指定特定的重均衡监听器
      */
     @Override
     public void subscribe(Collection<String> topics, ConsumerRebalanceListener listener) {
+        // 检查是否多线程调用
         acquire();
         try {
             if (topics.isEmpty()) {
                 // treat subscribing to empty topic list as the same as unsubscribing
+                // topics为空时，表示取消订阅
                 this.unsubscribe();
             } else {
                 log.debug("Subscribed to topic(s): {}", Utils.join(topics, ", "));
+                // 调用SubscriptionState实例的subscribe()方法，更新状态记录
                 this.subscriptions.subscribe(topics, listener);
+                // 使用metadata已知主题集合记录订阅的主题
                 metadata.setTopics(subscriptions.groupSubscription());
             }
         } finally {
+            // 释放重入次数
             release();
         }
     }
@@ -858,9 +865,11 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      * management since the listener gives you an opportunity to commit offsets before a rebalance finishes.
      *
      * @param topics The list of topics to subscribe to
+     * 订阅主题，主题以集合形式传入
      */
     @Override
     public void subscribe(Collection<String> topics) {
+        // 使用NoOpConsumerRebalanceListener重均衡监听器
         subscribe(topics, new NoOpConsumerRebalanceListener());
     }
 
@@ -879,16 +888,22 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      * </ul>
      *
      * @param pattern Pattern to subscribe to
+     * 订阅主题，主题以正则表达式的形式指定，并指定特定的重均衡监听器
      */
     @Override
     public void subscribe(Pattern pattern, ConsumerRebalanceListener listener) {
+        // 检查是否多线程调用
         acquire();
         try {
             log.debug("Subscribed to pattern: {}", pattern);
+            // 调用SubscriptionState实例的subscribe()方法，更新状态记录
             this.subscriptions.subscribe(pattern, listener);
+            // 标记需要更新所有的主题元数据
             this.metadata.needMetadataForAllTopics(true);
+            // 设置强制更新
             this.metadata.requestUpdate();
         } finally {
+            // 释放重入次数
             release();
         }
     }
