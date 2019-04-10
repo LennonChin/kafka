@@ -237,7 +237,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
     private PartitionAssignor lookupAssignor(String name) {
     	// 遍历所有的PartitionAssignor
         for (PartitionAssignor assignor : this.assignors) {
-        	// 匹配对应的PartitionAssignor
+        	// 匹配对应的PartitionAssignor：range或roundrobin
             if (assignor.name().equals(name))
                 return assignor;
         }
@@ -305,7 +305,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
 	 *
 	 * @param leaderId The id of the leader (which is this member)
 	 * @param assignmentStrategy 分配策略，这个参数传入的是joinResponse.groupProtocol()
-	 * @param allSubscriptions 所有的消费者
+	 * @param allSubscriptions 组内所有的消费者的信息
 	 * @return
 	 */
     @Override
@@ -320,13 +320,16 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
 
         Set<String> allSubscribedTopics = new HashSet<>();
         Map<String, Subscription> subscriptions = new HashMap<>();
-        // 遍历所有已知的Subscription订阅信息
+        /**
+         * allSubscriptions是GroupCoordinator返回的Group组内的Member信息，遍历该字典，进行数据整理
+         * 键是Member ID，值是序列化后的Subscription对象，其中记录了该Member订阅的主题等信息
+         */
         for (Map.Entry<String, ByteBuffer> subscriptionEntry : allSubscriptions.entrySet()) {
-        	// 反序列化值，得到Consumer Group中全部消费者订阅的Topic信息，反序列化为Subscription对象
+        	// 反序列化值，反序列化为Subscription对象，保存了MemberID对应的消费者所订阅的Topic信息
             Subscription subscription = ConsumerProtocol.deserializeSubscription(subscriptionEntry.getValue());
             // 添加到subscriptions字典中进行记录
             subscriptions.put(subscriptionEntry.getKey(), subscription);
-            // 将订阅的主题添加到allSubscribedTopics集合进行保存
+            // 将该Member订阅的主题添加到allSubscribedTopics集合进行保存
             allSubscribedTopics.addAll(subscription.topics());
         }
 
@@ -370,7 +373,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
     @Override
     protected void onJoinPrepare(int generation, String memberId) {
         // commit offsets prior to rebalance if auto-commit enabled
-		// 进行一次同步提交offset操作
+		// 如果设置了自动提交offset，则进行一次同步提交offset操作
         maybeAutoCommitOffsetsSync();
 
         // execute the user's callback before rebalance
@@ -378,6 +381,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         ConsumerRebalanceListener listener = subscriptions.listener();
         log.info("Revoking previously assigned partitions {} for group {}", subscriptions.assignedPartitions(), groupId);
         try {
+            // 调用ConsumerRebalanceListener的回调方法，告诉监听者当前的分区分配方案已废除
             Set<TopicPartition> revoked = new HashSet<>(subscriptions.assignedPartitions());
             listener.onPartitionsRevoked(revoked);
         } catch (WakeupException e) {

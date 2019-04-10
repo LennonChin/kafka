@@ -69,8 +69,12 @@ public abstract class AbstractPartitionAssignor implements PartitionAssignor {
             else
                 log.debug("Skipping assignment for topic {} since no metadata is available", topic);
         }
-
-        // 将分区分配的具体逻辑委托给assign()重载方法，由子类实现
+    
+        /**
+         * 将分区分配的具体逻辑委托给assign()重载方法，由子类重写实现；传入的参数结构：
+         * partitionsPerTopic：集群元数据中保存的信息，键为Topic名称，值为该Topic拥有的分区数；
+         * topicSubscriptions：Group里每个Member订阅的主题，键为Member ID，值为订阅的主题集合
+         */
         Map<String, List<TopicPartition>> rawAssignments = assign(partitionsPerTopic, topicSubscriptions);
 
         // this class has maintains no user data, so just wrap the results

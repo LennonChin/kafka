@@ -255,7 +255,7 @@ public abstract class AbstractCoordinator implements Closeable {
             // 查看是否还有发往GroupCoordinator所在Node的请求
             if (client.pendingRequestCount(this.coordinator) > 0) {
                 // 等待正在发送的请求发送完成并收到响应，避免重复发送JoinGroupRequest
-                client.awaitPendingRequests(this.coordinator);
+                client.awaitPendingRequests(this.coordinator); // 会阻塞
                 continue;
             }
 
