@@ -166,7 +166,7 @@ public class Fetcher<K, V> {
                                 long fetchOffset = request.fetchData().get(partition).offset;
                                 // 获取响应数据
                                 FetchResponse.PartitionData fetchData = entry.getValue();
-                                // 将响应数据构造为CompletedFetch对象添加到completedFetches队列
+                                // 将响应数据构造为CompletedFetch对象添加到completedFetches集合
                                 completedFetches.add(new CompletedFetch(partition, fetchOffset, fetchData, metricAggregator));
                             }
 
@@ -551,6 +551,7 @@ public class Fetcher<K, V> {
             List<Long> offsets = lor.responseData().get(topicPartition).offsets;
             if (offsets.size() != 1)
                 throw new IllegalStateException("This should not happen.");
+            // 获取其中的第一个offset
             long offset = offsets.get(0);
             log.debug("Fetched offset {} for partition {}", offset, topicPartition);
             // 将得到的offset传递出去
@@ -572,7 +573,7 @@ public class Fetcher<K, V> {
     private Set<TopicPartition> fetchablePartitions() {
         // 获取所有分配给当前消费者的可拉取的分区
         Set<TopicPartition> fetchable = subscriptions.fetchablePartitions();
-        // 从fetchable移除存在于nextInLineRecords中分区，因为这些分区的响应还未被完全处理
+        // 从fetchable移除nextInLineRecords记录中的分区，因为这些分区的响应还未被完全处理
         if (nextInLineRecords != null && !nextInLineRecords.isEmpty())
             fetchable.remove(nextInLineRecords.partition);
         // 从fetchable移除存在于completedFetches中分区，因为这些分区的响应还未被完全处理
@@ -860,8 +861,11 @@ public class Fetcher<K, V> {
     }
 
     private static class CompletedFetch {
+        // 分区
         private final TopicPartition partition;
+        // 拉取的offset
         private final long fetchedOffset;
+        // 拉取的分区消息数据
         private final FetchResponse.PartitionData partitionData;
         private final FetchResponseMetricAggregator metricAggregator;
 

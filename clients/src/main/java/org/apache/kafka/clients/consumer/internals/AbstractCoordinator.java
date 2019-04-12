@@ -269,6 +269,7 @@ public abstract class AbstractCoordinator implements Closeable {
                     // even if the consumer is woken up before finishing the rebalance
                     onJoinComplete(generation, memberId, protocol, value);
                     needsJoinPrepare = true;
+                    // 重启心跳定时任务
                     heartbeatTask.reset();
                 }
 
@@ -364,16 +365,22 @@ public abstract class AbstractCoordinator implements Closeable {
                 future.addListener(new RequestFutureListener<Void>() {
                     @Override
                     public void onSuccess(Void value) {
+                        // 心跳响应成功处理
                         requestInFlight = false;
                         long now = time.milliseconds();
+                        // 更新最后一次收到心跳响应的时间
                         heartbeat.receiveHeartbeat(now);
+                        // 计算下一次执行心跳任务的时间
                         long nextHeartbeatTime = now + heartbeat.timeToNextHeartbeat(now);
+                        // 根据下一次执行心跳任务的时间重新添加心跳任务
                         client.schedule(HeartbeatTask.this, nextHeartbeatTime);
                     }
 
                     @Override
                     public void onFailure(RuntimeException e) {
+                        // 心跳响应处理失败
                         requestInFlight = false;
+                        // 重新规划心跳任务，执行时间为等待退避时间段之后
                         client.schedule(HeartbeatTask.this, time.milliseconds() + retryBackoffMs);
                     }
                 });

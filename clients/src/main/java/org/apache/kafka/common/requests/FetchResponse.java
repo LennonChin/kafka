@@ -71,8 +71,11 @@ public class FetchResponse extends AbstractRequestResponse {
     private final int throttleTime;
 
     public static final class PartitionData {
+        // 错误码
         public final short errorCode;
+        // 高水位记录
         public final long highWatermark;
+        // 消息记录集缓冲区
         public final ByteBuffer recordSet;
 
         public PartitionData(short errorCode, long highWatermark, ByteBuffer recordSet) {

@@ -73,8 +73,15 @@ public class DelayedTaskQueue {
      * @param now the current time
      */
     public void poll(long now) {
+        /**
+         * 队列不为空，查看队首元素timeout是否小于或等于当前时间
+         * peek()，poll()方法都是非阻塞的，没有话就返回null
+         * 这里由于首先判空了，因此tasks.peek().timeout不会抛出空指针异常
+         */
         while (!tasks.isEmpty() && tasks.peek().timeout <= now) {
+            // 取出队首元素
             Entry entry = tasks.poll();
+            // 判断并执行
             entry.task.run(now);
         }
     }

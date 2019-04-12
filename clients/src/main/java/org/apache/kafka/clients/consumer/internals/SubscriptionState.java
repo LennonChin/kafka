@@ -394,6 +394,7 @@ public class SubscriptionState {
         return true;
     }
 
+    // 筛选position未知的所有分区
     public Set<TopicPartition> missingFetchPositions() {
         Set<TopicPartition> missing = new HashSet<>();
         for (Map.Entry<TopicPartition, TopicPartitionState> entry : assignment.entrySet())

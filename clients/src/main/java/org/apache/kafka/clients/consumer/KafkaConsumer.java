@@ -1058,7 +1058,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
         client.executeDelayedTasks(now);
 
         // init any new fetches (won't resend pending fetches)
-		// 尝试从completedFetches缓存中解析消息
+		// 尝试从nextInLineRecords和completedFetches缓存中解析消息
         Map<TopicPartition, List<ConsumerRecord<K, V>>> records = fetcher.fetchedRecords();
 
         // if data is available already, e.g. from a previous network client poll() call to commit,

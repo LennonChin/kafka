@@ -16,7 +16,7 @@ package org.apache.kafka.clients.consumer.internals;
  * A helper class for managing the heartbeat to the coordinator
  */
 public final class Heartbeat {
-    // 过期时间
+    // 判断是否超时的时间长度
     private final long timeout;
     // 两次发送心跳的间隔
     private final long interval;
@@ -24,7 +24,7 @@ public final class Heartbeat {
     private long lastHeartbeatSend;
     // 最后收到心跳响应的时间
     private long lastHeartbeatReceive;
-    // 心跳任务重置时间
+    // 心跳会话重置时间
     private long lastSessionReset;
 
     public Heartbeat(long timeout,

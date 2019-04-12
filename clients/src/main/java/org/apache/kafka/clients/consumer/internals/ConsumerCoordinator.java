@@ -494,7 +494,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
 
 
     public void commitOffsetsAsync(final Map<TopicPartition, OffsetAndMetadata> offsets, OffsetCommitCallback callback) {
-    	// 将needsFetchCommittedOffset设置为true
+    	// 将SubscriptionState的needsFetchCommittedOffset设置为true
         this.subscriptions.needRefreshCommits();
 		// 创建并缓存OffsetCommitRequest请求，等待发送，响应由OffsetCommitResponseHandler处理
 		RequestFuture<Void> future = sendOffsetCommitRequest(offsets);
