@@ -179,8 +179,11 @@ object RequestChannel extends Logging {
 class RequestChannel(val numProcessors: Int, val queueSize: Int) extends KafkaMetricsGroup {
   private var responseListeners: List[(Int) => Unit] = Nil
   private val requestQueue = new ArrayBlockingQueue[RequestChannel.Request](queueSize)
+  // 创建numProcessors大小的数组，元素泛型为BlockingQueue
   private val responseQueues = new Array[BlockingQueue[RequestChannel.Response]](numProcessors)
+  // 初始化数组元素
   for(i <- 0 until numProcessors)
+    // 每个元素为LinkedBlockingQueue实例
     responseQueues(i) = new LinkedBlockingQueue[RequestChannel.Response]()
 
   newGauge(
@@ -239,9 +242,12 @@ class RequestChannel(val numProcessors: Int, val queueSize: Int) extends KafkaMe
 
   /** Get a response for the given processor if there is one */
   def receiveResponse(processor: Int): RequestChannel.Response = {
+    // 通过Processor的ID获取requestChannel队列，并poll出一个RequestChannel.Response对象
     val response = responseQueues(processor).poll()
     if (response != null)
+      // 设置出队时间为当前时间
       response.request.responseDequeueTimeMs = SystemTime.milliseconds
+    // 返回
     response
   }
 
