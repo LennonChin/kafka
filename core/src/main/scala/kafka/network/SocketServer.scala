@@ -141,7 +141,7 @@ class SocketServer(val config: KafkaConfig, val metrics: Metrics, val time: Time
 
   // register the processor threads for notification of responses
   /**
-    * 向RequestChannel中添加监听器，
+    * 向RequestChannel中添加监听器，RequestChannel是Processor与Handler传递数据的桥梁
     * 当Handler线程向某个responseQueue中写入数据时，会唤醒对应的Processor线程进行处理
     */
   requestChannel.addResponseListener(id => processors(id).wakeup())
@@ -484,16 +484,21 @@ private[kafka] class Processor(val id: Int,
   override def run() {
     // 标识启动完成，唤醒等待Processor线程完成的线程
     startupComplete()
-    while (isRunning) {
+    while (isRunning) { // isRunning字段取的是alive.get，因此在Processor调用shutdown()时会将alive置为false，循环会结束
       try {
         // setup any new connections that have been queued up
         // 处理每个SocketChannel注册OP_READ事件的工作
         configureNewConnections()
         // register any new responses for writing
+        // 处理responseQueue队列中缓存的Response
         processNewResponses()
+        // 调用poll()方法读取请求，发送响应
         poll()
+        // 处理KSelector.completedReceives队列
         processCompletedReceives()
+        // 处理KSelector.completedSends队列
         processCompletedSends()
+        // 处理KSelector.disconnected队列
         processDisconnected()
       } catch {
         // We catch all the throwables here to prevent the processor thread from exiting. We do this because
@@ -524,15 +529,19 @@ private[kafka] class Processor(val id: Int,
             // that are sitting in the server's socket buffer
             curr.request.updateRequestMetrics
             trace("Socket server received empty response to send, registering for read: " + curr)
+            // unmute，其实是注册OP_READ事件
             selector.unmute(curr.request.connectionId)
           case RequestChannel.SendAction =>
+            // 需要发送响应给客户端，会将响应放入inflightResponses队列缓存
             sendResponse(curr)
           case RequestChannel.CloseConnectionAction =>
             curr.request.updateRequestMetrics
             trace("Closing socket connection actively according to the response code.")
+            // 需要关闭连接
             close(selector, curr.request.connectionId)
         }
       } finally {
+        // 继续处理responseQueue
         curr = requestChannel.receiveResponse(id)
       }
     }
@@ -554,6 +563,10 @@ private[kafka] class Processor(val id: Int,
   }
 
   private def poll() {
+    /**
+      * 将读取的请求、发送成功的请求以及断开的连接放入其
+      * completedReceives、completedSends、disconnected队列中等待处理
+      */
     try selector.poll(300)
     catch {
       case e @ (_: IllegalStateException | _: IOException) =>
@@ -564,14 +577,25 @@ private[kafka] class Processor(val id: Int,
     }
   }
 
+  /**
+    * 遍历completedReceives，将NetworkReceive、ProcessorId、身份认证信息一起封装成RequestChannel.Request对象
+    * 并放入RequestChannel.requestQueue队列中，等待Handler线程的后续处理。
+    * 之后，取消对应KafkaChannel注册的OP_READ事件，表示在发送响应之前，此连接不能再读取任何请求了。
+    */
   private def processCompletedReceives() {
+    // 遍历KSelector.completedReceives队列
     selector.completedReceives.asScala.foreach { receive =>
       try {
+        // 获取对应的KafkaChannel
         val channel = selector.channel(receive.source)
+        // 创建KafkaChannel对应的Session对象，用于权限控制
         val session = RequestChannel.Session(new KafkaPrincipal(KafkaPrincipal.USER_TYPE, channel.principal.getName),
           channel.socketAddress)
+        // 封装Request请求对象
         val req = RequestChannel.Request(processor = id, connectionId = receive.source, session = session, buffer = receive.payload, startTimeMs = time.milliseconds, securityProtocol = protocol)
+        // 将RequestChannel.Requestd放入RequestChannel.requestQueue队列中等待Handler线程的后续处理
         requestChannel.sendRequest(req)
+        // 取消注册的OP_READ事件，连接将不再读取数据
         selector.mute(receive.source)
       } catch {
         case e @ (_: InvalidRequestException | _: SchemaException) =>
@@ -583,22 +607,29 @@ private[kafka] class Processor(val id: Int,
   }
 
   private def processCompletedSends() {
+    // 遍历completedSends队列
     selector.completedSends.asScala.foreach { send =>
+      // 从inflightResponses字典中取出Response
       val resp = inflightResponses.remove(send.destination).getOrElse {
+        // 如果没取到就抛出异常
         throw new IllegalStateException(s"Send for ${send.destination} completed, but not in `inflightResponses`")
       }
       resp.request.updateRequestMetrics()
+      // 注册OP_READ事件，允许连接继续读取数据
       selector.unmute(send.destination)
     }
   }
 
   private def processDisconnected() {
+    // 遍历disconnected队列
     selector.disconnected.asScala.foreach { connectionId =>
       val remoteHost = ConnectionId.fromString(connectionId).getOrElse {
         throw new IllegalStateException(s"connectionId has unexpected format: $connectionId")
       }.remoteHost
+      // 从inflightResponses中移除该连接对应的所有Response
       inflightResponses.remove(connectionId).foreach(_.request.updateRequestMetrics())
       // the channel has been closed by the selector but the quotas still need to be updated
+      // 减少ConnectionQuotas中记录的连接数，为后续的新建连接做准备
       connectionQuotas.dec(InetAddress.getByName(remoteHost))
     }
   }
@@ -646,6 +677,7 @@ private[kafka] class Processor(val id: Int,
    * Close the selector and all open connections
    */
   private def closeAll() {
+    // 关闭KSelector上所有的KafkaChannel，并关闭KSelector
     selector.channels.asScala.foreach { channel =>
       close(selector, channel.id)
     }

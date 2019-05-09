@@ -45,15 +45,18 @@ object RequestChannel extends Logging {
 
   case class Session(principal: KafkaPrincipal, clientAddress: InetAddress)
 
+  // Request请求Case类
   case class Request(processor: Int, connectionId: String, session: Session, private var buffer: ByteBuffer, startTimeMs: Long, securityProtocol: SecurityProtocol) {
     // These need to be volatile because the readers are in the network thread and the writers are in the request
     // handler threads or the purgatory threads
+    // @volatile修饰保证线程可见性；记录操作时间的几个字段
     @volatile var requestDequeueTimeMs = -1L
     @volatile var apiLocalCompleteTimeMs = -1L
     @volatile var responseCompleteTimeMs = -1L
     @volatile var responseDequeueTimeMs = -1L
     @volatile var apiRemoteCompleteTimeMs = -1L
 
+    // 请求类型ID
     val requestId = buffer.getShort()
 
     // TODO: this will be removed once we migrated to client-side format
@@ -72,9 +75,11 @@ object RequestChannel extends Logging {
 
     // if we failed to find a server-side mapping, then try using the
     // client-side request / response format
+    // 请求头
     val header: RequestHeader =
       if (requestObj == null) {
         buffer.rewind
+        // 尝试解析ByteBuffer
         try RequestHeader.parse(buffer)
         catch {
           case ex: Throwable =>
@@ -82,13 +87,17 @@ object RequestChannel extends Logging {
         }
       } else
         null
+
+    // 请求体
     val body: AbstractRequest =
       if (requestObj == null)
         try {
           // For unsupported version of ApiVersionsRequest, create a dummy request to enable an error response to be returned later
+          // 判断请求头的类型
           if (header.apiKey == ApiKeys.API_VERSIONS.id && !Protocol.apiVersionSupported(header.apiKey, header.apiVersion))
             new ApiVersionsRequest
           else
+            // 尝试解析请求体
             AbstractRequest.getRequest(header.apiKey, header.apiVersion, buffer)
         } catch {
           case ex: Throwable =>
@@ -97,7 +106,9 @@ object RequestChannel extends Logging {
       else
         null
 
+    // 解析完成后将ByteBuffer置空
     buffer = null
+
     private val requestLogger = Logger.getLogger("kafka.request.logger")
 
     def requestDesc(details: Boolean): String = {
@@ -160,6 +171,13 @@ object RequestChannel extends Logging {
     }
   }
 
+  /**
+    * Response响应Case类
+    * @param processor 对应的Processor处理器
+    * @param request 请求对象
+    * @param responseSend 装载响应数据
+    * @param responseAction 有SendAction、NoOpAction、CloseConnectionAction三种类型
+    */
   case class Response(processor: Int, request: Request, responseSend: Send, responseAction: ResponseAction) {
     request.responseCompleteTimeMs = SystemTime.milliseconds
 
@@ -176,8 +194,14 @@ object RequestChannel extends Logging {
   case object CloseConnectionAction extends ResponseAction
 }
 
+/**
+  * @param numProcessors Processor线程个数，也是responseQueues这个数组的长度
+  * @param queueSize 缓存请求的最大个数，即requestQueue的长度
+  */
 class RequestChannel(val numProcessors: Int, val queueSize: Int) extends KafkaMetricsGroup {
+  // 监听器列表，其中的监听器的主要作用是Handler线程向responseQueue存放响应时唤醒对应的Processor线程
   private var responseListeners: List[(Int) => Unit] = Nil
+  // Processor线程向Handler线程传递请求的队列，Processor线程有多个，因此这里使用线程安全的队列
   private val requestQueue = new ArrayBlockingQueue[RequestChannel.Request](queueSize)
   // 创建numProcessors大小的数组，元素泛型为BlockingQueue
   private val responseQueues = new Array[BlockingQueue[RequestChannel.Response]](numProcessors)
@@ -211,23 +235,37 @@ class RequestChannel(val numProcessors: Int, val queueSize: Int) extends KafkaMe
     requestQueue.put(request)
   }
 
-  /** Send a response back to the socket server to be sent over the network */
+  /**
+    * Send a response back to the socket server to be sent over the network
+    * 向responseQueues添加Response（SendAction类型）
+    * */
   def sendResponse(response: RequestChannel.Response) {
+    // 添加Response
     responseQueues(response.processor).put(response)
+    // 告诉监听器
     for(onResponse <- responseListeners)
       onResponse(response.processor)
   }
 
-  /** No operation to take for the request, need to read more over the network */
+  /**
+    * No operation to take for the request, need to read more over the network
+    * 向responseQueues添加Response（NoOpAction类型）
+    * */
   def noOperation(processor: Int, request: RequestChannel.Request) {
+    // 添加Response
     responseQueues(processor).put(new RequestChannel.Response(processor, request, null, RequestChannel.NoOpAction))
+    // 告诉监听器
     for(onResponse <- responseListeners)
       onResponse(processor)
   }
 
-  /** Close the connection for the request */
+  /**
+    * Close the connection for the request
+    * 向responseQueues添加Response（CloseConnectionAction类型）
+    * */
   def closeConnection(processor: Int, request: RequestChannel.Request) {
     responseQueues(processor).put(new RequestChannel.Response(processor, request, null, RequestChannel.CloseConnectionAction))
+    // 告诉监听器
     for(onResponse <- responseListeners)
       onResponse(processor)
   }
