@@ -231,13 +231,13 @@ private[kafka] abstract class AbstractServerThread(connectionQuotas: ConnectionQ
     * 启动完成，唤醒阻塞的线程
    */
   protected def startupComplete() = {
-    // 调用调用startupLatch的countDown，唤醒阻塞线程
+    // 调用startupLatch的countDown，唤醒阻塞线程
     startupLatch.countDown()
   }
 
   /**
    * Record that the thread shutdown is complete
-    * 调用调用shutdownLatch的countDown，唤醒阻塞线程
+    * 调用shutdownLatch的countDown，唤醒阻塞线程
    */
   protected def shutdownComplete() = shutdownLatch.countDown()
 
@@ -696,32 +696,46 @@ private[kafka] class Processor(val id: Int,
 
 }
 
+/**
+  * @param defaultMax 每个IP上能创建的最大连接数
+  * @param overrideQuotas 具体指定某IP上最大的连接数，这里指定的最大连接数会覆盖上面maxConnectionsPerIp字段的值
+  */
 class ConnectionQuotas(val defaultMax: Int, overrideQuotas: Map[String, Int]) {
 
   private val overrides = overrideQuotas.map { case (host, count) => (InetAddress.getByName(host), count) }
   private val counts = mutable.Map[InetAddress, Int]()
 
+  // 增加指定的地址记录
   def inc(address: InetAddress) {
     counts.synchronized {
+      // 从counts字典获取指定地址当前的连接数
       val count = counts.getOrElseUpdate(address, 0)
+      // 更新counts字典
       counts.put(address, count + 1)
+      // 根据当时传入的defaultMax及overrideQuotas来获取允许的最大连接数
       val max = overrides.getOrElse(address, defaultMax)
+      // 如果过载，就抛出异常
       if (count >= max)
         throw new TooManyConnectionsException(address, max)
     }
   }
 
+  // 减少指定的地址记录
   def dec(address: InetAddress) {
     counts.synchronized {
+      // 从counts字典获取指定地址当前的连接数
       val count = counts.getOrElse(address,
         throw new IllegalArgumentException(s"Attempted to decrease connection count for address with no connections, address: $address"))
+      // 如果指定地址的连接数已经为1，则可以将其从counts中移除了
       if (count == 1)
         counts.remove(address)
       else
+      // 否则更新其计数器减1
         counts.put(address, count - 1)
     }
   }
 
+  // 获取指定地址上的连接数
   def get(address: InetAddress): Int = counts.synchronized {
     counts.getOrElse(address, 0)
   }
