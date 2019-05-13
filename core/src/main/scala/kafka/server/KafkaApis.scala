@@ -72,34 +72,37 @@ class KafkaApis(val requestChannel: RequestChannel,
     try {
       trace("Handling request:%s from connection %s;securityProtocol:%s,principal:%s".
         format(request.requestDesc(true), request.connectionId, request.securityProtocol, request.session.principal))
+      // 根据requestId获取请求对应的ApiKeys，进行匹配
       ApiKeys.forId(request.requestId) match {
-        case ApiKeys.PRODUCE => handleProducerRequest(request)
-        case ApiKeys.FETCH => handleFetchRequest(request)
-        case ApiKeys.LIST_OFFSETS => handleOffsetRequest(request)
-        case ApiKeys.METADATA => handleTopicMetadataRequest(request)
-        case ApiKeys.LEADER_AND_ISR => handleLeaderAndIsrRequest(request)
-        case ApiKeys.STOP_REPLICA => handleStopReplicaRequest(request)
-        case ApiKeys.UPDATE_METADATA_KEY => handleUpdateMetadataRequest(request)
+        case ApiKeys.PRODUCE => handleProducerRequest(request) // 生产
+        case ApiKeys.FETCH => handleFetchRequest(request) // 拉取
+        case ApiKeys.LIST_OFFSETS => handleOffsetRequest(request) // 获取offsets
+        case ApiKeys.METADATA => handleTopicMetadataRequest(request) // 获取原数据
+        case ApiKeys.LEADER_AND_ISR => handleLeaderAndIsrRequest(request) // 获取Leader及ISR信息
+        case ApiKeys.STOP_REPLICA => handleStopReplicaRequest(request) // 停止副本
+        case ApiKeys.UPDATE_METADATA_KEY => handleUpdateMetadataRequest(request) // 更新原数据
         case ApiKeys.CONTROLLED_SHUTDOWN_KEY => handleControlledShutdownRequest(request)
-        case ApiKeys.OFFSET_COMMIT => handleOffsetCommitRequest(request)
-        case ApiKeys.OFFSET_FETCH => handleOffsetFetchRequest(request)
-        case ApiKeys.GROUP_COORDINATOR => handleGroupCoordinatorRequest(request)
-        case ApiKeys.JOIN_GROUP => handleJoinGroupRequest(request)
-        case ApiKeys.HEARTBEAT => handleHeartbeatRequest(request)
-        case ApiKeys.LEAVE_GROUP => handleLeaveGroupRequest(request)
-        case ApiKeys.SYNC_GROUP => handleSyncGroupRequest(request)
-        case ApiKeys.DESCRIBE_GROUPS => handleDescribeGroupRequest(request)
-        case ApiKeys.LIST_GROUPS => handleListGroupsRequest(request)
-        case ApiKeys.SASL_HANDSHAKE => handleSaslHandshakeRequest(request)
-        case ApiKeys.API_VERSIONS => handleApiVersionsRequest(request)
-        case requestId => throw new KafkaException("Unknown api code " + requestId)
+        case ApiKeys.OFFSET_COMMIT => handleOffsetCommitRequest(request) // 提交offset
+        case ApiKeys.OFFSET_FETCH => handleOffsetFetchRequest(request) // 获取offset
+        case ApiKeys.GROUP_COORDINATOR => handleGroupCoordinatorRequest(request) // 获取GroupCoordinator
+        case ApiKeys.JOIN_GROUP => handleJoinGroupRequest(request) // JoinGroup请求
+        case ApiKeys.HEARTBEAT => handleHeartbeatRequest(request) // 心跳
+        case ApiKeys.LEAVE_GROUP => handleLeaveGroupRequest(request) // 离开Group
+        case ApiKeys.SYNC_GROUP => handleSyncGroupRequest(request) // 同步Group
+        case ApiKeys.DESCRIBE_GROUPS => handleDescribeGroupRequest(request) // 获取Group信息
+        case ApiKeys.LIST_GROUPS => handleListGroupsRequest(request) // 获取Group列表
+        case ApiKeys.SASL_HANDSHAKE => handleSaslHandshakeRequest(request) // SASL握手
+        case ApiKeys.API_VERSIONS => handleApiVersionsRequest(request) // 获取API Version
+        case requestId => throw new KafkaException("Unknown api code " + requestId) // 未知
       }
     } catch {
       case e: Throwable =>
         if (request.requestObj != null) {
+          // 如果request.requestObj不为空，则使用request.requestObj处理异常
           request.requestObj.handleError(e, requestChannel, request)
           error("Error when handling request %s".format(request.requestObj), e)
         } else {
+          // 否则构建Response，使用RequestChannel返回异常响应
           val response = request.body.getErrorResponse(request.header.apiVersion, e)
           val respHeader = new ResponseHeader(request.header.correlationId)
 

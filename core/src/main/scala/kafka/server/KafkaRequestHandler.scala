@@ -38,6 +38,7 @@ class KafkaRequestHandler(id: Int,
   def run() {
     while(true) {
       try {
+        // 循环获取RequestChannel.Request
         var req : RequestChannel.Request = null
         while (req == null) {
           // We use a single meter for aggregate idle percentage for the thread pool.
@@ -45,11 +46,13 @@ class KafkaRequestHandler(id: Int,
           // time_window is independent of the number of threads, each recorded idle
           // time should be discounted by # threads.
           val startSelectTime = SystemTime.nanoseconds
+          // 从RequestChannel的requestQueue队列中获取请求
           req = requestChannel.receiveRequest(300)
           val idleTime = SystemTime.nanoseconds - startSelectTime
           aggregateIdleMeter.mark(idleTime / totalHandlerThreads)
         }
 
+        // 接收到Shutdown命令
         if(req eq RequestChannel.AllDone) {
           debug("Kafka request handler %d on broker %d received shut down command".format(
             id, brokerId))
@@ -57,6 +60,7 @@ class KafkaRequestHandler(id: Int,
         }
         req.requestDequeueTimeMs = SystemTime.milliseconds
         trace("Kafka request handler %d on broker %d handling request %s".format(id, brokerId, req))
+        // 使用KafkaApis处理RequestChannel.Request
         apis.handle(req)
       } catch {
         case e: Throwable => error("Exception when handling request", e)
@@ -64,6 +68,7 @@ class KafkaRequestHandler(id: Int,
     }
   }
 
+  // 关闭线程，向RequestChannel的requestQueue队列中添加一个RequestChannel.AllDone请求，表明关闭Handler
   def shutdown(): Unit = requestChannel.sendRequest(RequestChannel.AllDone)
 }
 
@@ -78,16 +83,24 @@ class KafkaRequestHandlerPool(val brokerId: Int,
   this.logIdent = "[Kafka Request Handler on Broker " + brokerId + "], "
   val threads = new Array[Thread](numThreads)
   val runnables = new Array[KafkaRequestHandler](numThreads)
+
+  // 循环创建KafkaRequestHandler对象
   for(i <- 0 until numThreads) {
+    // 放入runnables数组
     runnables(i) = new KafkaRequestHandler(i, brokerId, aggregateIdleMeter, numThreads, requestChannel, apis)
+    // 将线程置为守护线程
     threads(i) = Utils.daemonThread("kafka-request-handler-" + i, runnables(i))
+    // 启动线程
     threads(i).start()
   }
 
+  // 关闭线程池
   def shutdown() {
     info("shutting down")
+    // 遍历并关闭线程
     for(handler <- runnables)
       handler.shutdown
+    // 等待threads中的所有线程终止
     for(thread <- threads)
       thread.join
     info("shut down completely")
