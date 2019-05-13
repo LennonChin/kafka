@@ -211,22 +211,26 @@ class Message(val buffer: ByteBuffer,
     
   /**
    * Compute the checksum of the message from the message contents
+    * 根据ByteBuffer数据计算checksum值
    */
   def computeChecksum: Long =
     CoreUtils.crc32(buffer.array, buffer.arrayOffset + MagicOffset,  buffer.limit - MagicOffset)
   
   /**
    * Retrieve the previously computed CRC for this message
+    * 读取消息中的CRC值作为checksum
    */
   def checksum: Long = Utils.readUnsignedInt(buffer, CrcOffset)
   
     /**
    * Returns true if the crc stored with the message matches the crc computed off the message contents
+      * 判断消息是否有效，即将消息中的checksum与计算出的checksum进行比较
    */
   def isValid: Boolean = checksum == computeChecksum
   
   /**
    * Throw an InvalidMessageException if isValid is false for this message
+    * 保证消息是有效的，如果无效则抛出InvalidMessageException异常
    */
   def ensureValid() {
     if(!isValid)
@@ -235,52 +239,63 @@ class Message(val buffer: ByteBuffer,
   
   /**
    * The complete serialized size of this message in bytes (including crc, header attributes, etc)
+    * 消息大小
    */
   def size: Int = buffer.limit
 
   /**
    * The position where the key size is stored.
+    * 表示键大小的数据的偏移量
    */
   private def keySizeOffset = {
+    // 当魔数为MagicValue_V0为KeySizeOffset_V0，否则为KeySizeOffset_V1
     if (magic == MagicValue_V0) KeySizeOffset_V0
     else KeySizeOffset_V1
   }
 
   /**
    * The length of the key in bytes
+    * 键大小
    */
   def keySize: Int = buffer.getInt(keySizeOffset)
   
   /**
    * Does the message have a key?
+    * 消息是否有键
    */
   def hasKey: Boolean = keySize >= 0
   
   /**
    * The position where the payload size is stored
+    * 表示值大小的数据的偏移量
    */
   private def payloadSizeOffset = {
+    // payLoadSize数据紧跟着键的数据，魔数不同时，键的偏移量不同
     if (magic == MagicValue_V0) KeyOffset_V0 + max(0, keySize)
     else KeyOffset_V1 + max(0, keySize)
   }
   
   /**
    * The length of the message value in bytes
+    * 获取值数据的大小
    */
   def payloadSize: Int = buffer.getInt(payloadSizeOffset)
   
   /**
    * Is the payload of this message null
+    * 判断值数据是否为空
    */
   def isNull: Boolean = payloadSize < 0
   
   /**
    * The magic version of this message
+    * 获取魔数，偏移量是MagicOffset
    */
   def magic: Byte = buffer.get(MagicOffset)
   
   /**
    * The attributes stored with this message
+    * 获取消息属性，一个字节长，偏移量是AttributesOffset
    */
   def attributes: Byte = buffer.get(AttributesOffset)
 
@@ -290,6 +305,10 @@ class Message(val buffer: ByteBuffer,
    * 1. wrapperMessageTimestampType = None and wrapperMessageTimestamp is None - Uncompressed message, timestamp and timestamp type are in the message.
    * 2. wrapperMessageTimestampType = LogAppendTime and wrapperMessageTimestamp is defined - Compressed message using LogAppendTime
    * 3. wrapperMessageTimestampType = CreateTime and wrapperMessageTimestamp is defined - Compressed message using CreateTime
+    * 获取时间戳，其含义由attribute的第3位确定，0表示创建时间，1表示追加时间；
+    * magic值不同，消息的长度是不同的：
+    *   - 当magic为0时，消息的offset使用绝对offset且消息格式中没有timestamp部分；
+    *   - 当magic为1时，消息的offset使用相对offset且消息格式中存在timestamp部分。
    */
   def timestamp: Long = {
     if (magic == MagicValue_V0)
@@ -303,40 +322,52 @@ class Message(val buffer: ByteBuffer,
 
   /**
    * The timestamp type of the message
+    * 时间戳类型
    */
   def timestampType = {
     if (magic == MagicValue_V0)
+      // 无时间戳
       TimestampType.NO_TIMESTAMP_TYPE
     else
+      // 根据消息属性attributes来获取时间戳类型
       wrapperMessageTimestampType.getOrElse(TimestampType.forAttributes(attributes))
   }
   
   /**
    * The compression codec used with this message
+    * 获取压缩器类型
    */
   def compressionCodec: CompressionCodec = 
     CompressionCodec.getCompressionCodec(buffer.get(AttributesOffset) & CompressionCodeMask)
   
   /**
    * A ByteBuffer containing the content of the message
+    * 获取值数据
    */
   def payload: ByteBuffer = sliceDelimited(payloadSizeOffset)
   
   /**
    * A ByteBuffer containing the message key
+    * 获取键数据
    */
   def key: ByteBuffer = sliceDelimited(keySizeOffset)
 
   /**
    * convert the message to specified format
+    * 根据指定的魔数将消息转换为特定格式
    */
   def toFormatVersion(toMagicValue: Byte): Message = {
     if (magic == toMagicValue)
+      // 指定魔数与当前魔数相同，直接返回即可
       this
     else {
+      // 否则进行转换
+      // 先创建需要的ByteBuffer
       val byteBuffer = ByteBuffer.allocate(size + Message.headerSizeDiff(magic, toMagicValue))
       // Copy bytes from old messages to new message
+      // 使用convertToBuffer()方法进行数据拷贝
       convertToBuffer(toMagicValue, byteBuffer, Message.NoTimestamp)
+      // 创建新的Message对象并返回
       new Message(byteBuffer)
     }
   }
