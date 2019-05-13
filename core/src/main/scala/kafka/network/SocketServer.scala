@@ -547,17 +547,24 @@ private[kafka] class Processor(val id: Int,
     }
   }
 
-  /* `protected` for test usage */
+  /**
+    * `protected` for test usage
+    * 将连接放入inflightResponses队列，等待发送
+    * */
   protected[network] def sendResponse(response: RequestChannel.Response) {
     trace(s"Socket server received response to send, registering for write and sending data: $response")
+    // 获取对应的KafkaChannel
     val channel = selector.channel(response.responseSend.destination)
     // `channel` can be null if the selector closed the connection because it was idle for too long
+    // 如果KafkaChannel为null，表示连接可能失效了，记录错误信息，并更新到监控系统
     if (channel == null) {
       warn(s"Attempting to send response via channel for which there is no open connection, connection id $id")
       response.request.updateRequestMetrics()
     }
     else {
+      // 将响应绑定到KSelector的send属性上
       selector.send(response.responseSend)
+      // 添加响应到inflightResponses字典
       inflightResponses += (response.request.connectionId -> response)
     }
   }
@@ -660,7 +667,7 @@ private[kafka] class Processor(val id: Int,
         val remotePort = channel.socket().getPort
         // 根据本地Host、port，客户端Host、port构造ConnectionId对象
         val connectionId = ConnectionId(localHost, localPort, remoteHost, remotePort).toString
-        // 注册OP_READ事件
+        // 注册OP_READ事件，这里使用的是Kafka封装的KSelector
         selector.register(connectionId, channel)
       } catch {
         // We explicitly catch all non fatal exceptions and close the socket to avoid a socket leak. The other

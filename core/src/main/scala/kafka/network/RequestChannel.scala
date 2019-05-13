@@ -280,7 +280,7 @@ class RequestChannel(val numProcessors: Int, val queueSize: Int) extends KafkaMe
 
   /** Get a response for the given processor if there is one */
   def receiveResponse(processor: Int): RequestChannel.Response = {
-    // 通过Processor的ID获取requestChannel队列，并poll出一个RequestChannel.Response对象
+    // 通过Processor的ID获取对应Processor的Response队列，并poll出一个RequestChannel.Response对象
     val response = responseQueues(processor).poll()
     if (response != null)
       // 设置出队时间为当前时间
