@@ -226,10 +226,13 @@ object CoreUtils extends Logging {
    * Execute the given function inside the lock
    */
   def inLock[T](lock: Lock)(fun: => T): T = {
+    // 加锁
     lock.lock()
     try {
+      // 执行过程
       fun
     } finally {
+      // 解锁
       lock.unlock()
     }
   }
