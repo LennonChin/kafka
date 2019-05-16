@@ -243,44 +243,77 @@ public class MemoryRecords implements Records {
         return writable;
     }
 
+    // 消息记录迭代器
     public static class RecordsIterator extends AbstractIterator<LogEntry> {
+        // 指向MemoryRecords的buffer字段
         private final ByteBuffer buffer;
+        // 读取buffer的输入流，如果迭代压缩消息，则是对应的解压缩输入流。
         private final DataInputStream stream;
+        // 压缩类型
         private final CompressionType type;
+        // 是否是迭代压缩消息，为true时表示迭代非压缩消息，为false时表示迭代压缩消息
         private final boolean shallow;
+        // 迭代压缩消息的内层迭代器
         private RecordsIterator innerIter;
 
         // The variables for inner iterator
+        /**
+         * 内层迭代器需要迭代的压缩消息集合，其中LogEntry中封装了消息及其offset。
+         * 外层迭代器的此字段始终为null。
+         */
         private final ArrayDeque<LogEntry> logEntries;
+        /**
+         * 在内层迭代器迭代压缩消息时使用，用于记录压缩消息中第一个消息的offset，并根据此字段计算每个消息的offset。
+         * 外层迭代器的此字段始终为-1。
+         */
         private final long absoluteBaseOffset;
 
+        // 用于创建外层迭代器
         public RecordsIterator(ByteBuffer buffer, boolean shallow) {
+            // 外层消息是非压缩的
             this.type = CompressionType.NONE;
+            // 指向MemoryRecords的buffer字段
             this.buffer = buffer;
+            // 标识是否为深层迭代器
             this.shallow = shallow;
+            // 输入流
             this.stream = new DataInputStream(new ByteBufferInputStream(buffer));
+            // 外层迭代器的logEntries恒为null，absoluteBaseOffset恒为-1
             this.logEntries = null;
             this.absoluteBaseOffset = -1;
         }
 
         // Private constructor for inner iterator.
+        // 用于创建内层迭代器
         private RecordsIterator(LogEntry entry) {
+            // 指定内层压缩消息的压缩类型
             this.type = entry.record().compressionType();
             this.buffer = entry.record().value();
+            // 标识为深层压缩器
             this.shallow = true;
+            // 创建指定压缩类型的输入流
             this.stream = Compressor.wrapForInput(new ByteBufferInputStream(this.buffer), type, entry.record().magic());
+            // 外层消息的offset
             long wrapperRecordOffset = entry.offset();
             // If relative offset is used, we need to decompress the entire message first to compute
             // the absolute offset.
             if (entry.record().magic() > Record.MAGIC_VALUE_V0) {
                 this.logEntries = new ArrayDeque<>();
                 long wrapperRecordTimestamp = entry.record().timestamp();
+                // 在while循环中将内层消息全部解压并添加到logEntries集合中
                 while (true) {
                     try {
+                        /**
+                         * getNextEntryFromStream()方法对于内外层消息的作用并不一样
+                         *  - 对于内层消息，该方法是读取并解压缩消息
+                         *  - 对于外层消息，则仅仅是读取消息
+                         */
                         LogEntry logEntry = getNextEntryFromStream();
+                        // 根据LogEntry对象创建带有时间戳的Record记录对象
                         Record recordWithTimestamp = new Record(logEntry.record().buffer(),
                                                                 wrapperRecordTimestamp,
                                                                 entry.record().timestampType());
+                        // 再次封装LogEntry并将其添加到logEntries
                         logEntries.add(new LogEntry(logEntry.offset(), recordWithTimestamp));
                     } catch (EOFException e) {
                         break;
@@ -288,6 +321,7 @@ public class MemoryRecords implements Records {
                         throw new KafkaException(e);
                     }
                 }
+                // 计算absoluteBaseOffset
                 this.absoluteBaseOffset = wrapperRecordOffset - logEntries.getLast().offset();
             } else {
                 this.logEntries = null;
@@ -305,22 +339,28 @@ public class MemoryRecords implements Records {
          */
         @Override
         protected LogEntry makeNext() {
+            // 内层迭代是否完成
             if (innerDone()) {
                 try {
+                    // 获取消息
                     LogEntry entry = getNextEntry();
                     // No more record to return.
+                    // 获取不到消息，调用allDone()结束迭代
                     if (entry == null)
                         return allDone();
 
                     // Convert offset to absolute offset if needed.
+                    // 在内层迭代器中计算每个消息的absoluteOffset
                     if (absoluteBaseOffset >= 0) {
                         long absoluteOffset = absoluteBaseOffset + entry.offset();
                         entry = new LogEntry(absoluteOffset, entry.record());
                     }
 
                     // decide whether to go shallow or deep iteration if it is compressed
+                    // 根据压缩类型和shallow参数觉得是否创建内层迭代器
                     CompressionType compression = entry.record().compressionType();
                     if (compression == CompressionType.NONE || shallow) {
+                        // 无压缩类型或者是浅层迭代，直接返回entry
                         return entry;
                     } else {
                         // init the inner iterator with the value payload of the message,
@@ -329,7 +369,9 @@ public class MemoryRecords implements Records {
                         // would not try to further decompress underlying messages
                         // There will be at least one element in the inner iterator, so we don't
                         // need to call hasNext() here.
+                        // 否则创建内层迭代器
                         innerIter = new RecordsIterator(entry);
+                        // 返回内层迭代器的消息
                         return innerIter.next();
                     }
                 } catch (EOFException e) {
@@ -338,46 +380,74 @@ public class MemoryRecords implements Records {
                     throw new KafkaException(e);
                 }
             } else {
+                // 内层迭代还未完成，返回内层迭代的消息数据
                 return innerIter.next();
             }
         }
 
         private LogEntry getNextEntry() throws IOException {
             if (logEntries != null)
+                // 从logEntries队列中获取LogEntry
                 return getNextEntryFromEntryList();
             else
+                // 从buffer中获取LogEntry
                 return getNextEntryFromStream();
         }
 
         private LogEntry getNextEntryFromEntryList() {
+            // 从logEntries中获取LogEntry
             return logEntries.isEmpty() ? null : logEntries.remove();
         }
 
+        // 读取消息
         private LogEntry getNextEntryFromStream() throws IOException {
             // read the offset
+            // 读取消息offset
             long offset = stream.readLong();
             // read record size
+            // 读取消息size
             int size = stream.readInt();
+            // 如果消息size小于0，则抛出IllegalStateException异常
             if (size < 0)
                 throw new IllegalStateException("Record with size " + size);
             // read the record, if compression is used we cannot depend on size
             // and hence has to do extra copy
             ByteBuffer rec;
             if (type == CompressionType.NONE) {
+                // 非压缩消息
+                /**
+                 * 为buffer创建一个切片
+                 * slice()方法会从buffer的position开始创建一个新的buffer
+                 * 新buffer与旧buffer共享同样的数据
+                 * 但新旧buffer的position、limit及mark是相互独立的
+                 */
                 rec = buffer.slice();
+                // 计算新的position
                 int newPos = buffer.position() + size;
+                // 判断position是否合法
                 if (newPos > buffer.limit())
                     return null;
+                // 定位到新的position
                 buffer.position(newPos);
+                // 设置limit为size
                 rec.limit(size);
             } else {
+                // 压缩消息
+                // 创建size大小的字节数组recordBuffer
                 byte[] recordBuffer = new byte[size];
+                // 通过流读取数据到字节数组recordBuffer
                 stream.readFully(recordBuffer, 0, size);
+                // 将字节数组recordBuffer转换为ByteBuffer
                 rec = ByteBuffer.wrap(recordBuffer);
             }
+            // 返回LogEntry对象
             return new LogEntry(offset, new Record(rec));
         }
 
+        /**
+         * 内层迭代是否结束
+         * 当内层迭代器为null，或内层迭代器不为null但没有下一项元素了，即表示内层循环结束了
+         */
         private boolean innerDone() {
             return innerIter == null || !innerIter.hasNext();
         }

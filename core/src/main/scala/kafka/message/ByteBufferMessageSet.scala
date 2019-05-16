@@ -37,33 +37,47 @@ object ByteBufferMessageSet {
                      wrapperMessageTimestamp: Option[Long],
                      timestampType: TimestampType,
                      messages: Message*): ByteBuffer = {
+    // 如果传入的消息为空，则返回空的ByteBuffer
     if (messages.isEmpty)
       MessageSet.Empty.buffer
-    else if (compressionCodec == NoCompressionCodec) {
+    else if (compressionCodec == NoCompressionCodec) {// 无压缩器
+      // 计算并创建大小可容纳所有传入消息的ByteBuffer
       val buffer = ByteBuffer.allocate(MessageSet.messageSetSize(messages))
+      // 遍历所有传入的消息，并将数据写入到buffer
       for (message <- messages) writeMessage(buffer, message, offsetAssigner.nextAbsoluteOffset())
       buffer.rewind()
+      // 返回buffer
       buffer
     } else {
+      // 需要压缩
+      // 得到魔数和时间戳
       val magicAndTimestamp = wrapperMessageTimestamp match {
         case Some(ts) => MagicAndTimestamp(messages.head.magic, ts)
         case None => MessageSet.magicAndLargestTimestamp(messages)
       }
+
       var offset = -1L
+      // 底层使用byte数组保存写入的压缩数据
       val messageWriter = new MessageWriter(math.min(math.max(MessageSet.messageSetSize(messages) / 2, 1024), 1 << 16))
+      // write是个柯里化方法
       messageWriter.write(codec = compressionCodec, timestamp = magicAndTimestamp.timestamp, timestampType = timestampType, magicValue = magicAndTimestamp.magic) { outputStream =>
+        // 创建指定压缩类型的输入流
         val output = new DataOutputStream(CompressionFactory(compressionCodec, magicAndTimestamp.magic, outputStream))
         try {
+          // 遍历写入内层压缩消息
           for (message <- messages) {
             offset = offsetAssigner.nextAbsoluteOffset()
             if (message.magic != magicAndTimestamp.magic)
               throw new IllegalArgumentException("Messages in the message set must have same magic value")
             // Use inner offset if magic value is greater than 0
+            // 魔数为1.写入的是相对offset；魔数为0，写的是offset
             if (magicAndTimestamp.magic > Message.MagicValue_V0)
               output.writeLong(offsetAssigner.toInnerOffset(offset))
             else
               output.writeLong(offset)
+            // 写入size
             output.writeInt(message.size)
+            // 写入Message数据
             output.write(message.buffer.array, message.buffer.arrayOffset, message.buffer.limit)
           }
         } finally {
@@ -71,6 +85,7 @@ object ByteBufferMessageSet {
         }
       }
       val buffer = ByteBuffer.allocate(messageWriter.size + MessageSet.LogOverhead)
+      // 按照消息格式写入整个外层消息，外层消息的offset是最后一条内层消息的offset
       writeMessage(buffer, messageWriter, offset)
       buffer.rewind()
       buffer
@@ -162,9 +177,13 @@ object ByteBufferMessageSet {
     }
   }
 
+  // 将消息数据写入到buffer中
   private[kafka] def writeMessage(buffer: ByteBuffer, message: Message, offset: Long) {
+    // 先写入offset
     buffer.putLong(offset)
+    // 再写入消息大小
     buffer.putInt(message.size)
+    // 再写入消息数据
     buffer.put(message.buffer)
     message.buffer.rewind()
   }
@@ -405,6 +424,7 @@ class ByteBufferMessageSet(val buffer: ByteBuffer) extends MessageSet with Loggi
    * operations and avoid re-compression.
    *
    * Returns the message set and a boolean indicating whether the message sizes may have changed.
+    * 用于验证消息并分配offset
    */
   private[kafka] def validateMessagesAndAssignOffsets(offsetCounter: LongRef,
                                                       now: Long,
@@ -416,16 +436,34 @@ class ByteBufferMessageSet(val buffer: ByteBuffer) extends MessageSet with Loggi
                                                       messageTimestampDiffMaxMs: Long): (ByteBufferMessageSet, Boolean) = {
     if (sourceCodec == NoCompressionCodec && targetCodec == NoCompressionCodec) {
       // check the magic value
+      // 检查所有Message的魔数与指定的魔数是否一致
       if (!isMagicValueInAllWrapperMessages(messageFormatVersion)) {
         // Message format conversion
+        /**
+          * 因为存在Message的魔数不一致问题，需要进行统一，这可能会导致消息总长度变化，需要创建新的ByteBufferMessageSet。
+          * 同时还会进行offset的分配，验证并更新CRC32、时间戳等信息
+          */
         (convertNonCompressedMessages(offsetCounter, compactedTopic, now, messageTimestampType, messageTimestampDiffMaxMs,
           messageFormatVersion), true)
       } else {
         // Do in-place validation, offset assignment and maybe set timestamp
+        /**
+          * 处理非压缩消息且魔数值统一的情况，由于魔数确定，长度不会发生改变。
+          * 主要是进行offset分配，验证并更新CRC32、时间戳等信息。
+          */
         (validateNonCompressedMessagesAndAssignOffsetInPlace(offsetCounter, now, compactedTopic, messageTimestampType,
           messageTimestampDiffMaxMs), false)
       }
     } else {
+      /**
+        * 处理压缩消息的情况。
+        * inPlaceAssignment标识是否可以直接复用当前ByteBufferMessage对象。
+        * 下面4种情况不能复用：
+        * 1. 消息当前压缩类型与此broker指定的压缩类型不一致，需要重新压缩
+        * 2. 魔数为0时，需要重写消息的offset为绝对的offset
+        * 3. 魔数大于0，但内部压缩消息某些字段需要修改，例如时间戳
+        * 4. 消息格式需要转换
+        */
       // Deal with compressed messages
       // We cannot do in place assignment in one of the following situations:
       // 1. Source and target compression codec are different
@@ -434,20 +472,25 @@ class ByteBufferMessageSet(val buffer: ByteBuffer) extends MessageSet with Loggi
       // 4. Message format conversion is needed.
 
       // No in place assignment situation 1 and 2
-      var inPlaceAssignment = sourceCodec == targetCodec && messageFormatVersion > Message.MagicValue_V0
+      var inPlaceAssignment = sourceCodec == targetCodec && // 检查情况1
+        messageFormatVersion > Message.MagicValue_V0 // 检查情况2
 
       var maxTimestamp = Message.NoTimestamp
       val expectedInnerOffset = new LongRef(0)
       val validatedMessages = new mutable.ArrayBuffer[Message]
+      // 遍历内层压缩消息，此步骤会解压
       this.internalIterator(isShallow = false).foreach { messageAndOffset =>
         val message = messageAndOffset.message
+        // 检查消息的键
         validateMessageKey(message, compactedTopic)
 
         if (message.magic > Message.MagicValue_V0 && messageFormatVersion > Message.MagicValue_V0) {
           // No in place assignment situation 3
           // Validate the timestamp
+          // 检查时间戳
           validateTimestamp(message, now, messageTimestampType, messageTimestampDiffMaxMs)
           // Check if we need to overwrite offset
+          // 检查情况3，检查内部offset是否正常
           if (messageAndOffset.offset != expectedInnerOffset.getAndIncrement())
             inPlaceAssignment = false
           maxTimestamp = math.max(maxTimestamp, message.timestamp)
@@ -458,13 +501,16 @@ class ByteBufferMessageSet(val buffer: ByteBuffer) extends MessageSet with Loggi
             s"compression attribute set: $message")
 
         // No in place assignment situation 4
+        // 检查情况4
         if (message.magic != messageFormatVersion)
           inPlaceAssignment = false
 
+        // 保存通过上述检测和转换的Message的集合
         validatedMessages += message.toFormatVersion(messageFormatVersion)
       }
 
       if (!inPlaceAssignment) {
+        // 不能复用当前的ByteBufferMessage对象的场景
         // Cannot do in place assignment.
         val wrapperMessageTimestamp = {
           if (messageFormatVersion == Message.MagicValue_V0)
@@ -475,13 +521,16 @@ class ByteBufferMessageSet(val buffer: ByteBuffer) extends MessageSet with Loggi
             Some(now)
         }
 
+        // 创建新ByteBufferMessageSet对象，重新压缩。此时调用上面介绍的create()方法进行压缩
         (new ByteBufferMessageSet(compressionCodec = targetCodec,
                                   offsetCounter = offsetCounter,
                                   wrapperMessageTimestamp = wrapperMessageTimestamp,
                                   timestampType = messageTimestampType,
                                   messages = validatedMessages: _*), true)
       } else {
+        // 复用当前ByteBufferMessageSet对象，这样可以减少一次压缩操作
         // Do not do re-compression but simply update the offset, timestamp and attributes field of the wrapper message.
+        // 更新外层消息的offset，将其offset更新为内部最后一条压缩消息的offset
         buffer.putLong(0, offsetCounter.addAndGet(validatedMessages.size) - 1)
         // validate the messages
         validatedMessages.foreach(_.ensureValid())
@@ -496,7 +545,9 @@ class ByteBufferMessageSet(val buffer: ByteBuffer) extends MessageSet with Loggi
           crcUpdateNeeded = false
         else if (messageTimestampType == TimestampType.LOG_APPEND_TIME) {
           // Set timestamp type and timestamp
+          // 更新外层消息的时间戳
           buffer.putLong(timestampOffset, now)
+          // 更新外层消息的attribute
           buffer.put(attributeOffset, messageTimestampType.updateAttributes(attributes))
         }
 
@@ -504,6 +555,7 @@ class ByteBufferMessageSet(val buffer: ByteBuffer) extends MessageSet with Loggi
           // need to recompute the crc value
           buffer.position(MessageSet.LogOverhead)
           val wrapperMessage = new Message(buffer.slice())
+          // 更新外层消息的CRC32
           Utils.writeUnsignedInt(buffer, MessageSet.LogOverhead + Message.CrcOffset, wrapperMessage.computeChecksum)
         }
         buffer.rewind()

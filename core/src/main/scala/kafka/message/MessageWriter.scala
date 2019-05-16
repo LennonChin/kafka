@@ -32,27 +32,36 @@ class MessageWriter(segmentSize: Int) extends BufferingOutputStream(segmentSize)
             timestamp: Long,
             timestampType: TimestampType,
             magicValue: Byte)(writePayload: OutputStream => Unit): Unit = {
+    // 写入CRC信息
     withCrc32Prefix {
       // write magic value
+      // 写入魔数
       write(magicValue)
       // write attributes
+      // 写入属性
       var attributes: Byte = 0
       if (codec.codec > 0)
         attributes = (attributes | (CompressionCodeMask & codec.codec)).toByte
+      // 根据魔数更新属性中的时间戳
       if (magicValue > MagicValue_V0)
         attributes = timestampType.updateAttributes(attributes)
       write(attributes)
       // Write timestamp
+      // 写入时间戳，当魔数大于MagicValue_V0（0）时才写入
       if (magicValue > MagicValue_V0)
         writeLong(timestamp)
       // write the key
+      // 如果键为null，写入-1的int值
       if (key == null) {
         writeInt(-1)
       } else {
+        // 否则先写入键的长度
         writeInt(key.length)
+        // 然后写入键值
         write(key, 0, key.length)
       }
       // write the payload with length prefix
+      // 写入值，在该过程中还会写入值长度数据
       withLengthPrefix {
         writePayload(this)
       }
@@ -106,11 +115,14 @@ class MessageWriter(segmentSize: Int) extends BufferingOutputStream(segmentSize)
 
   private def withLengthPrefix(writeData: => Unit): Unit = {
     // get a writer for length value
+    // 获取用于写入值长度的写入器，在这个过程中会跳过ValueSizeLength个字节数
     val lengthWriter = reserve(ValueSizeLength)
     // save current size
     val oldSize = size
     // write data
+    // 写入值数据
     writeData
+    // 使用lengthWriter写入值长度
     // write length value
     writeInt(lengthWriter, size - oldSize)
   }

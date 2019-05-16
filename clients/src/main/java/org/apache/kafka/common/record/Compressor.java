@@ -104,6 +104,8 @@ public class Compressor {
         if (type != CompressionType.NONE) {
             // for compressed records, leave space for the header and the shallow message metadata
             // and move the starting position to the value payload offset
+            // 如果进行消息压缩，则在buffer的首部提前空出offset和size的空间（Records.LOG_OVERHEAD）及
+            // CRC32等字段（Record.RECORD_OVERHEAD）的空间
             buffer.position(initPos + Records.LOG_OVERHEAD + Record.RECORD_OVERHEAD);
         }
 
@@ -124,32 +126,42 @@ public class Compressor {
 
     public void close() {
         try {
+            // 关闭压缩输出流
             appendStream.close();
         } catch (IOException e) {
             throw new KafkaException(e);
         }
 
-        if (type != CompressionType.NONE) {
+        if (type != CompressionType.NONE) { // 使用了压缩算法
             ByteBuffer buffer = bufferStream.buffer();
+            // 先保存buffer的position位置
             int pos = buffer.position();
             // write the header, for the end offset write as number of records - 1
+            // 移动position到buffer的头部
             buffer.position(initPos);
+            // 写入offset，即消息的个数
             buffer.putLong(numRecords - 1);
+            // 写入size
             buffer.putInt(pos - initPos - Records.LOG_OVERHEAD);
             // write the shallow message (the crc and value size are not correct yet)
+            // 写入压缩消息的相关信息，例如时间戳、压缩算法等，使用的魔数为MAGIC_VALUE_V1（值为1）
             Record.write(buffer, maxTimestamp, null, null, type, 0, -1);
             // compute the fill the value size
+            // 计算并写入整个压缩消息的value部分的长度
             int valueSize = pos - initPos - Records.LOG_OVERHEAD - Record.RECORD_OVERHEAD;
             buffer.putInt(initPos + Records.LOG_OVERHEAD + Record.KEY_OFFSET_V1, valueSize);
             // compute and fill the crc at the beginning of the message
+            // 计算并写入CRC32校验码
             long crc = Record.computeChecksum(buffer,
                 initPos + Records.LOG_OVERHEAD + Record.MAGIC_OFFSET,
                 pos - initPos - Records.LOG_OVERHEAD - Record.MAGIC_OFFSET);
             Utils.writeUnsignedInt(buffer, initPos + Records.LOG_OVERHEAD + Record.CRC_OFFSET, crc);
             // reset the position
+            // 还原buffer的position指针
             buffer.position(pos);
 
             // update the compression ratio
+            // 计算并更新压缩率
             this.compressionRate = (float) buffer.position() / this.writtenUncompressed;
             TYPE_TO_RATE[type.id] = TYPE_TO_RATE[type.id] * COMPRESSION_RATE_DAMPING_FACTOR +
                 compressionRate * (1 - COMPRESSION_RATE_DAMPING_FACTOR);

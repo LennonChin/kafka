@@ -32,12 +32,15 @@ object MessageSet {
   
   /**
    * The size of a message set containing the given messages
+    * 计算消息集合的大小
    */
   def messageSetSize(messages: Iterable[Message]): Int =
+    // 通过foldLeft进行计算
     messages.foldLeft(0)(_ + entrySize(_))
 
   /**
    * The size of a size-delimited entry in a message set
+    * 单条消息的大小
    */
   def entrySize(message: Message): Int = LogOverhead + message.size
 
