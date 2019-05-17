@@ -287,6 +287,7 @@ class OffsetIndex(@volatile private[this] var _file: File, val baseOffset: Long,
   
   /**
    * True iff there are no more slots available in this index
+    * 索引文件的索引项数量是否达到最大值
    */
   def isFull: Boolean = _entries >= _maxEntries
   

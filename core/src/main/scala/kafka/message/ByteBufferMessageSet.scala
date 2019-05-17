@@ -380,8 +380,10 @@ class ByteBufferMessageSet(val buffer: ByteBuffer) extends MessageSet with Loggi
         topIter.position(topIter.position + size)
         val newMessage = new Message(message)
         if(isShallow) {
+          // 浅层迭代
           new MessageAndOffset(newMessage, offset)
         } else {
+          // 深层迭代
           newMessage.compressionCodec match {
             case NoCompressionCodec =>
               innerIter = null
