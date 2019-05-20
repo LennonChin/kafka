@@ -37,9 +37,9 @@ object LogOffsetMetadata {
  *  1. the message offset
  *  2. the base message offset of the located segment
  *  3. the physical position on the located segment
- *   - messageOffset字段记录了Log中最后一个offset值
- *   - segmentBaseOffset字段记录了activeSegment的baseOffset
- *   - relativePositionInSegment字段记录了activeSegment的大小
+ *   - messageOffset字段记录了LogSegment的offset值
+ *   - segmentBaseOffset字段记录了LogSegment的baseOffset
+ *   - relativePositionInSegment字段记录了所表示的LogSegment的物理存储日志的偏移量
  */
 case class LogOffsetMetadata(messageOffset: Long,
                              segmentBaseOffset: Long = LogOffsetMetadata.UnknownSegBaseOffset,

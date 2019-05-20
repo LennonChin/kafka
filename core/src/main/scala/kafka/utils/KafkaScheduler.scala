@@ -68,6 +68,7 @@ trait Scheduler {
 class KafkaScheduler(val threads: Int, 
                      val threadNamePrefix: String = "kafka-scheduler-", 
                      daemon: Boolean = true) extends Scheduler with Logging {
+  // JDK定时任务线程池
   private var executor: ScheduledThreadPoolExecutor = null
   private val schedulerThreadId = new AtomicInteger(0)
 
@@ -76,10 +77,16 @@ class KafkaScheduler(val threads: Int,
     this synchronized {
       if(isStarted)
         throw new IllegalStateException("This scheduler has already been started!")
+      // 构造器内初始化定时任务线程池
+      // 配置线程数
       executor = new ScheduledThreadPoolExecutor(threads)
+      // 配置在线程池关闭后继续执行已存在的周期任务
       executor.setContinueExistingPeriodicTasksAfterShutdownPolicy(false)
+      // 配置在线程池关闭后放弃执行已存在的定时任务
       executor.setExecuteExistingDelayedTasksAfterShutdownPolicy(false)
+      // 配置线程工厂
       executor.setThreadFactory(new ThreadFactory() {
+                                  // 默认创建是守护线程
                                   def newThread(runnable: Runnable): Thread = 
                                     Utils.newThread(threadNamePrefix + schedulerThreadId.getAndIncrement(), runnable, daemon)
                                 })
@@ -95,6 +102,7 @@ class KafkaScheduler(val threads: Int,
         cachedExecutor.shutdown()
         this.executor = null
       }
+      // 等待一天，需要等待剩余已存在的周期任务执行完成
       cachedExecutor.awaitTermination(1, TimeUnit.DAYS)
     }
   }
@@ -103,10 +111,13 @@ class KafkaScheduler(val threads: Int,
     debug("Scheduling task %s with initial delay %d ms and period %d ms."
         .format(name, TimeUnit.MILLISECONDS.convert(delay, unit), TimeUnit.MILLISECONDS.convert(period, unit)))
     this synchronized {
+      // 保证线程池已经启动
       ensureRunning
+      // 封装fun为Runnable对象
       val runnable = CoreUtils.runnable {
         try {
           trace("Beginning execution of scheduled task '%s'.".format(name))
+          // 主要的执行任务代码
           fun()
         } catch {
           case t: Throwable => error("Uncaught exception in scheduled task '" + name +"'", t)
@@ -115,8 +126,10 @@ class KafkaScheduler(val threads: Int,
         }
       }
       if(period >= 0)
+        // 提交周期任务
         executor.scheduleAtFixedRate(runnable, delay, period, unit)
       else
+        // 提交非周期任务
         executor.schedule(runnable, delay, unit)
     }
   }

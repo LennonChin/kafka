@@ -264,6 +264,7 @@ class Log(val dir: File,
   }
 
   private def updateLogEndOffset(messageOffset: Long) {
+    // 每次更新都会创建新的LogOffsetMetadata对象，LogOffsetMetadata是个不可变对象
     nextOffsetMetadata = new LogOffsetMetadata(messageOffset, activeSegment.baseOffset, activeSegment.size.toInt)
   }
 
@@ -552,9 +553,9 @@ class Log(val dir: File,
   /**
    * Read messages from the log.
    *
-   * @param startOffset The offset to begin reading at
-   * @param maxLength The maximum number of bytes to read
-   * @param maxOffset The offset to read up to, exclusive. (i.e. this offset NOT included in the resulting message set)
+   * @param startOffset The offset to begin reading at 开始读取的startOffset
+   * @param maxLength The maximum number of bytes to read 最大读取的数据字节数
+   * @param maxOffset The offset to read up to, exclusive. (i.e. this offset NOT included in the resulting message set) 最大读取到的offset（不包含）
    *
    * @throws OffsetOutOfRangeException If startOffset is beyond the log end offset or before the base offset of the first segment.
    * @return The fetch data information including fetch starting offset metadata and messages read.
@@ -564,14 +565,23 @@ class Log(val dir: File,
 
     // Because we don't use lock for reading, the synchronization is a little bit tricky.
     // We create the local variables to avoid race conditions with updates to the log.
+    /**
+      * read操作不会加锁，因此将nextOffsetMetadata拷贝一份为局部变量避免线程竞争更新了nextOffsetMetadata
+      * nextOffsetMetadata每次在updateLogEndOffset()方法的代码中更新updateLogEndOffset的时候，都是创建新的LogOffsetMetadata对象，
+      * 而且LogOffsetMetadata中也没有提供任何修改属性的方法，可见LogOffsetMetadata对象是个不可变对象
+      */
     val currentNextOffsetMetadata = nextOffsetMetadata
+    // 下一条记录的offset
     val next = currentNextOffsetMetadata.messageOffset
+    // 如果起始offset等于下一条记录的offset，说明读取的数据其实是空的，返回一个MessageSet为空的FetchDataInfo对象
     if(startOffset == next)
       return FetchDataInfo(currentNextOffsetMetadata, MessageSet.Empty)
 
+    // 查找offset仅小于startOffset的LogSegment对象
     var entry = segments.floorEntry(startOffset)
 
     // attempt to read beyond the log end offset is an error
+    // 检查边界
     if(startOffset > next || entry == null)
       throw new OffsetOutOfRangeException("Request for offset %d but we only have log segments in the range %d to %d.".format(startOffset, segments.firstKey, next))
 
@@ -579,27 +589,39 @@ class Log(val dir: File,
     // but if that segment doesn't contain any messages with an offset greater than that
     // continue to read from successive segments until we get some messages or we reach the end of the log
     while(entry != null) {
+      // 当查找到的entry不为null
       // If the fetch occurs on the active segment, there might be a race condition where two fetch requests occur after
       // the message is appended but before the nextOffsetMetadata is updated. In that case the second fetch may
       // cause OffsetOutOfRangeException. To solve that, we cap the reading up to exposed position instead of the log
       // end of the active segment.
+      /**
+        * 如果读取的entry是activeSegment，可能会有并发线程在读取期间添加了消息数据导致activeSegment发生改变
+        */
       val maxPosition = {
-        if (entry == segments.lastEntry) {
+        if (entry == segments.lastEntry) { // 是否是segments集合中最后一个元素，即读取的是activeSegment
+          // 获取activeSegment表示的物理日志存储的偏移量
           val exposedPos = nextOffsetMetadata.relativePositionInSegment.toLong
           // Check the segment again in case a new segment has just rolled out.
+          // 再次检查当前的activeSegment是否被改变
           if (entry != segments.lastEntry)
             // New log segment has rolled out, we can read up to the file end.
+            // 写线程并发进行了roll()操作，此时activeSegment改变了，变成了一个新的LogSegment
             entry.getValue.size
           else
+            // activeSegment没有改变，直接返回exposedPos
             exposedPos
         } else {
+          // 读取的是非activeSegment的情况，可以直接读取到LogSegment的结尾
           entry.getValue.size
         }
       }
+      // 使用LogSegment的read()方法读取消息数据
       val fetchInfo = entry.getValue.read(startOffset, maxOffset, maxLength, maxPosition)
       if(fetchInfo == null) {
+        // 如果在这个LogSegment中没有读取到数据，就继续读取下一个LogSegment
         entry = segments.higherEntry(entry.getKey)
       } else {
+        // 否则直接返回
         return fetchInfo
       }
     }
@@ -607,6 +629,7 @@ class Log(val dir: File,
     // okay we are beyond the end of the last segment with no data fetched although the start offset is in range,
     // this can happen when all messages with offset larger than start offsets have been deleted.
     // In this case, we will return the empty set with log end offset metadata
+    // 找不到startOffset之后的消息，返回一个MessageSet为空的FetchDataInfo对象
     FetchDataInfo(nextOffsetMetadata, MessageSet.Empty)
   }
 
@@ -762,7 +785,7 @@ class Log(val dir: File,
       // 更新nextOffsetMetadata，这次更新的目的是为了更新其中记录的activeSegment.baseOffset和activeSegment.size，而LEO并不会改变
       updateLogEndOffset(nextOffsetMetadata.messageOffset)
       // schedule an asynchronous flush of the old segment
-      // 执行flush()操作
+      // 提交执行flush()操作的定时任务
       scheduler.schedule("flush-log", () => flush(newOffset), delay = 0L)
 
       info("Rolled new log segment for '" + name + "' in %.0f ms.".format((System.nanoTime - start) / (1000.0*1000.0)))
@@ -790,11 +813,14 @@ class Log(val dir: File,
       return
     debug("Flushing log '" + name + " up to offset " + offset + ", last flushed: " + lastFlushTime + " current time: " +
           time.milliseconds + " unflushed = " + unflushedMessages)
+    // 将所有LogSegment的 revocerPoint ~ LEO 之间的消息刷新到磁盘上
     for(segment <- logSegments(this.recoveryPoint, offset))
       segment.flush()
     lock synchronized {
       if(offset > this.recoveryPoint) {
+        // 更新recoverPoint的值
         this.recoveryPoint = offset
+        // 更新最后一次刷盘时间记录
         lastflushedTime.set(time.milliseconds)
       }
     }
@@ -887,10 +913,13 @@ class Log(val dir: File,
   def logSegments(from: Long, to: Long): Iterable[LogSegment] = {
     import JavaConversions._
     lock synchronized {
+      // 找出key仅大于from的最近的元素的键，也即是baseOffset仅大于from的最近的LogSegment对象的baseOffset
       val floor = segments.floorKey(from)
       if(floor eq null)
+        // 如果floor为null，则取baseOffset小于to的LogSegment对象
         segments.headMap(to).values
       else
+        // 否则取floor到to之间的LogSegment对象
         segments.subMap(floor, true, to, false).values
     }
   }
