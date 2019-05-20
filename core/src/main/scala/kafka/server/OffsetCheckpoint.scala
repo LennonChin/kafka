@@ -37,28 +37,35 @@ object OffsetCheckpoint {
 class OffsetCheckpoint(val file: File) extends Logging {
   import OffsetCheckpoint._
   private val path = file.toPath.toAbsolutePath
+  // 新的tmp文件
   private val tempPath = Paths.get(path.toString + ".tmp")
   private val lock = new Object()
   file.createNewFile() // in case the file doesn't exist
 
   def write(offsets: Map[TopicAndPartition, Long]) {
+    // 加锁
     lock synchronized {
       // write to temp file and then swap with the existing file
+      // 将数据先写入tmp文件
       val fileOutputStream = new FileOutputStream(tempPath.toFile)
       val writer = new BufferedWriter(new OutputStreamWriter(fileOutputStream))
       try {
+        // 写入版本号
         writer.write(CurrentVersion.toString)
         writer.newLine()
 
+        // 写入记录条数
         writer.write(offsets.size.toString)
         writer.newLine()
 
+        // 循环写入topic名称、分区编号以及对应Log的recoveryPoint
         offsets.foreach { case (topicPart, offset) =>
           writer.write(s"${topicPart.topic} ${topicPart.partition} $offset")
           writer.newLine()
         }
 
         writer.flush()
+        // 将写入的数据刷新到磁盘
         fileOutputStream.getFD().sync()
       } catch {
         case e: FileNotFoundException =>
@@ -70,7 +77,7 @@ class OffsetCheckpoint(val file: File) extends Logging {
       } finally {
         writer.close()
       }
-
+      // 使用tmp文件替换原来的RecoveryPointCheckpoint文件
       Utils.atomicMoveWithFallback(tempPath, path)
     }
   }

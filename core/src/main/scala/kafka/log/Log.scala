@@ -653,21 +653,44 @@ class Log(val dir: File,
    * @return The number of segments deleted
    */
   def deleteOldSegments(predicate: LogSegment => Boolean): Int = {
-    lock synchronized {
+    lock synchronized { // 加锁
       //find any segments that match the user-supplied predicate UNLESS it is the final segment
       //and it is empty (since we would just end up re-creating it)
+      // 获取activeSegment
       val lastEntry = segments.lastEntry
       val deletable =
-        if (lastEntry == null) Seq.empty
+        if (lastEntry == null) Seq.empty // 没有activeSegment
+        /**
+          * 得到segments跳表中value集合的迭代器
+          * 循环检测LogSegment是否符合删除条件，并将符合条件的LogSegment形成集合返回
+          * takeWhile会根据传入的条件（A => Boolean）筛选元素，条件如下：
+          *   - s => predicate(s)：使用predicate判断s是否符合条件
+          *   - (s.baseOffset != lastEntry.getValue.baseOffset || s.size > 0)
+          *     - s.baseOffset != lastEntry.getValue.baseOffset：s是否不是activeSegment
+          *     - s.size > 0：s的大小大于0
+          * 即在判断时间是否超时的情况下：
+          * 1. LogSegment的最近修改日期在retention.ms之前；
+          * 2. LogSegment不是activeSegment
+          * 3. LogSegment的大小大于0
+          * 即在判断大小是否超额的情况下：
+          * 1. Log的大小已经大于retention.bytes，且LogSegment的大小小于前面二者的差额；
+          * 2. LogSegment不是activeSegment
+          * 3. LogSegment的大小大于0
+          */
         else logSegments.takeWhile(s => predicate(s) && (s.baseOffset != lastEntry.getValue.baseOffset || s.size > 0))
+      // 需要删除的LogSegment数量
       val numToDelete = deletable.size
       if (numToDelete > 0) {
         // we must always have at least one segment, so if we are going to delete all the segments, create a new one first
+        // 全部的LogSegment都需要删除
         if (segments.size == numToDelete)
+          // 删除前先创建一个新的activeSegment，保证保留一个LogSegment
           roll()
         // remove the segments for lookups
+        // 遍历删除LogSegment
         deletable.foreach(deleteSegment(_))
       }
+      // 返回删除的数量
       numToDelete
     }
   }
@@ -935,13 +958,18 @@ class Log(val dir: File,
    * </ol>
    * This allows reads to happen concurrently without synchronization and without the possibility of physically
    * deleting a file while it is being read from.
+    *
+    * 删除指定的LogSegment
    *
    * @param segment The log segment to schedule for deletion
    */
   private def deleteSegment(segment: LogSegment) {
     info("Scheduling log segment %d for log %s for deletion.".format(segment.baseOffset, name))
+    // 加锁
     lock synchronized {
+      // 从segments集合中移除
       segments.remove(segment.baseOffset)
+      // 异步删除
       asyncDeleteSegment(segment)
     }
   }
@@ -951,11 +979,14 @@ class Log(val dir: File,
    * @throws KafkaStorageException if the file can't be renamed and still exists
    */
   private def asyncDeleteSegment(segment: LogSegment) {
+    // 改后缀名，在后面加上.deleted
     segment.changeFileSuffixes("", Log.DeletedFileSuffix)
+    // 定义一个删除方法，用于在定时任务中执行
     def deleteSeg() {
       info("Deleting segment %d from log %s.".format(segment.baseOffset, name))
       segment.delete()
     }
+    // 添加定时任务删除文件
     scheduler.schedule("delete-file", deleteSeg, delay = config.fileDeleteDelayMs)
   }
 

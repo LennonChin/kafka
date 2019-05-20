@@ -352,8 +352,11 @@ class LogSegment(val log: FileMessageSet,
    * @throws KafkaStorageException if the delete fails.
    */
   def delete() {
+    // 删除Log日志文件
     val deletedLog = log.delete()
+    // 杀出Index索引文件
     val deletedIndex = index.delete()
+    // 检查是否删除成功
     if(!deletedLog && log.file.exists)
       throw new KafkaStorageException("Delete of log " + log.file.getName + " failed.")
     if(!deletedIndex && index.file.exists)
