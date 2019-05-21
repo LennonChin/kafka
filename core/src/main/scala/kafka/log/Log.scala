@@ -1015,22 +1015,30 @@ class Log(val dir: File,
    * @param isRecoveredSwapFile true if the new segment was created from a swap file during recovery after a crash
    */
   private[log] def replaceSegments(newSegment: LogSegment, oldSegments: Seq[LogSegment], isRecoveredSwapFile : Boolean = false) {
+    // 加锁
     lock synchronized {
       // need to do this in two phases to be crash safe AND do the delete asynchronously
       // if we crash in the middle of this we complete the swap in loadSegments()
+      // 修改.cleaned -> .swap
       if (!isRecoveredSwapFile)
         newSegment.changeFileSuffixes(Log.CleanedFileSuffix, Log.SwapFileSuffix)
+
+      // 将新的LogSegment添加到Log.segments跳表
       addSegment(newSegment)
 
       // delete the old files
+      // 删除旧的LogSegment
       for(seg <- oldSegments) {
         // remove the index entry
         if(seg.baseOffset != newSegment.baseOffset)
+          // 删除LogSegment
           segments.remove(seg.baseOffset)
         // delete segment
+        // 删除文件
         asyncDeleteSegment(seg)
       }
       // okay we are safe now, remove the swap suffix
+      // 移除.swap文件的.swap后缀
       newSegment.changeFileSuffixes(Log.SwapFileSuffix, "")
     }
   }

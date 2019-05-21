@@ -42,6 +42,21 @@ class OffsetCheckpoint(val file: File) extends Logging {
   private val lock = new Object()
   file.createNewFile() // in case the file doesn't exist
 
+  /**
+    * 最终存储的格式如下：
+    * 0
+    * 20
+    * topic_test1 6 0
+    * topic_test2 1 0
+    * topic_test1 13 0
+    * topic_test2 3 0
+    * ...
+    *
+    * 第一行表示当前版本，第二行表示该LogDir目录下有多少个partition目录
+    * 后续每行存储了三个信息：topic partition编号 recovery-checkpoint，有多少个partition目录就有多少行
+    *
+    * @param offsets
+    */
   def write(offsets: Map[TopicAndPartition, Long]) {
     // 加锁
     lock synchronized {
@@ -82,26 +97,38 @@ class OffsetCheckpoint(val file: File) extends Logging {
     }
   }
 
+  // 读取checkpoint文件
   def read(): Map[TopicAndPartition, Long] = {
 
     def malformedLineException(line: String) =
       new IOException(s"Malformed line in offset checkpoint file: $line'")
 
+    // 加锁
     lock synchronized {
+      // 读取器
       val reader = new BufferedReader(new FileReader(file))
       var line: String = null
       try {
+        // 读取版本号
         line = reader.readLine()
         if (line == null)
           return Map.empty
         val version = line.toInt
+        // 针对版本号进行不同的处理
         version match {
+          // 当前版本号
           case CurrentVersion =>
+            // 读取期望大小
             line = reader.readLine()
             if (line == null)
               return Map.empty
             val expectedSize = line.toInt
             val offsets = mutable.Map[TopicAndPartition, Long]()
+
+            /**
+              * 分别读取每行topic、partition、checkpoint offset信息
+              * 并转换为Map[TopicAndPartition, Long]格式
+              */
             line = reader.readLine()
             while (line != null) {
               WhiteSpacesPattern.split(line) match {
@@ -111,8 +138,10 @@ class OffsetCheckpoint(val file: File) extends Logging {
                 case _ => throw malformedLineException(line)
               }
             }
+            // 检查大小是否匹配
             if (offsets.size != expectedSize)
               throw new IOException(s"Expected $expectedSize entries but found only ${offsets.size}")
+            // 返回得到的Map[TopicAndPartition, Long]集合
             offsets
           case _ =>
             throw new IOException("Unrecognized version of the highwatermark checkpoint file: " + version)

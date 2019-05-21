@@ -24,6 +24,7 @@ abstract class ShutdownableThread(val name: String, val isInterruptible: Boolean
         extends Thread(name) with Logging {
   this.setDaemon(false)
   this.logIdent = "[" + name + "], "
+  // 运行状态
   val isRunning: AtomicBoolean = new AtomicBoolean(true)
   private val shutdownLatch = new CountDownLatch(1)
 
@@ -43,10 +44,12 @@ abstract class ShutdownableThread(val name: String, val isInterruptible: Boolean
       false
   }
 
-    /**
+  /**
    * After calling initiateShutdown(), use this API to wait until the shutdown is complete
+    * 阻塞等待线程结束
    */
   def awaitShutdown(): Unit = {
+    // 阻塞
     shutdownLatch.await()
     info("Shutdown completed")
   }
@@ -59,7 +62,9 @@ abstract class ShutdownableThread(val name: String, val isInterruptible: Boolean
   override def run(): Unit = {
     info("Starting ")
     try{
+      // while循环，处理主要工作
       while(isRunning.get()){
+        // doWork()方法由子类实现
         doWork()
       }
     } catch{
@@ -67,6 +72,7 @@ abstract class ShutdownableThread(val name: String, val isInterruptible: Boolean
         if(isRunning.get())
           error("Error due to ", e)
     }
+    // 解阻塞
     shutdownLatch.countDown()
     info("Stopped ")
   }
