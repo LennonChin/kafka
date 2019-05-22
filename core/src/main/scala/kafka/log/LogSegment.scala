@@ -299,12 +299,17 @@ class LogSegment(val log: FileMessageSet,
    */
   @threadsafe
   def nextOffset(): Long = {
+    // 读取得到FetchDataInfo
     val ms = read(index.lastOffset, None, log.sizeInBytes)
     if(ms == null) {
+      // 没读到消息，则直接取baseOffset
       baseOffset
     } else {
+      // 读到了消息
       ms.messageSet.lastOption match {
+          // 读到的消息是空
         case None => baseOffset
+          // 读到消息不为空，取最后一个消息的nextOffset
         case Some(last) => last.nextOffset
       }
     }

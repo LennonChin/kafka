@@ -26,7 +26,10 @@ import java.nio.channels._
  */
 class FileLock(val file: File) extends Logging {
   file.createNewFile() // create the file if it doesn't exist
+
+  // 文件的Channel
   private val channel = new RandomAccessFile(file, "rw").getChannel()
+  // 通过Channel来锁定文件后，得到的FileLock
   private var flock: java.nio.channels.FileLock = null
 
   /**
@@ -35,6 +38,7 @@ class FileLock(val file: File) extends Logging {
   def lock() {
     this synchronized {
       trace("Acquiring lock on " + file.getAbsolutePath)
+      // 加锁
       flock = channel.lock()
     }
   }
@@ -49,6 +53,7 @@ class FileLock(val file: File) extends Logging {
         // weirdly this method will return null if the lock is held by another
         // process, but will throw an exception if the lock is held by this process
         // so we have to handle both cases
+        // 加锁
         flock = channel.tryLock()
         flock != null
       } catch {
@@ -64,6 +69,7 @@ class FileLock(val file: File) extends Logging {
     this synchronized {
       trace("Releasing lock on " + file.getAbsolutePath)
       if(flock != null)
+        // 解锁
         flock.release()
     }
   }
@@ -73,7 +79,9 @@ class FileLock(val file: File) extends Logging {
    */
   def destroy() = {
     this synchronized {
+      // 解锁
       unlock()
+      // 关闭Channel
       channel.close()
     }
   }

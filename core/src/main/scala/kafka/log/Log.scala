@@ -108,6 +108,8 @@ class Log(val dir: File,
     * 键是LogSegment的baseOffset，值是LogSegment对象
     * */
   private val segments: ConcurrentNavigableMap[java.lang.Long, LogSegment] = new ConcurrentSkipListMap[java.lang.Long, LogSegment]
+
+  // 加载LogSegment
   loadSegments()
 
   /**
@@ -160,34 +162,48 @@ class Log(val dir: File,
 
     // first do a pass through the files in the log directory and remove any temporary files
     // and find any interrupted swap operations
+    // 遍历dir目录下的文件，处理.cleaned、.deleted、.swap文件
     for(file <- dir.listFiles if file.isFile) {
+      // 文件不可读，抛异常
       if(!file.canRead)
         throw new IOException("Could not read file " + file)
       val filename = file.getName
       if(filename.endsWith(DeletedFileSuffix) || filename.endsWith(CleanedFileSuffix)) {
         // if the file ends in .deleted or .cleaned, delete it
+        // 文件是以.deleted或.cleaned后缀结尾，则直接删除；
+        // .deleted表示本就标记为要删除的文件；.cleaned文件表示压缩过程出现宕机
         file.delete()
       } else if(filename.endsWith(SwapFileSuffix)) {
         // we crashed in the middle of a swap operation, to recover:
         // if a log, delete the .index file, complete the swap operation later
         // if an index just delete it, it will be rebuilt
+        // 文件是以.swap后缀结尾；.swap文件表示压缩完的完整消息，可以使用，将其后缀去掉
         val baseName = new File(CoreUtils.replaceSuffix(file.getPath, SwapFileSuffix, ""))
         if(baseName.getPath.endsWith(IndexFileSuffix)) {
+          // 如果该.swap文件是索引文件，直接删除
           file.delete()
         } else if(baseName.getPath.endsWith(LogFileSuffix)){
           // delete the index
+          // 如果该.swap文件是日志文件，则需要进行恢复；获取该日志文件对应的索引文件，将其删除
           val index = new File(CoreUtils.replaceSuffix(baseName.getPath, LogFileSuffix, IndexFileSuffix))
           index.delete()
+          // 将该文件添加到swapFiles集合
           swapFiles += file
         }
       }
     }
 
     // now do a second pass and load all the .log and .index files
+    /**
+      * 加载全部的日志文件及索引文件，
+      *   - 如果存在没有对应的日志文件的索引文件，就将该索引文件也删除
+      *   - 如果存在没有对应的索引文件的日志文件，则为其重建索引文件
+      */
     for(file <- dir.listFiles if file.isFile) {
       val filename = file.getName
       if(filename.endsWith(IndexFileSuffix)) {
         // if it is an index file, make sure it has a corresponding .log file
+        // 是.index文件，判断对应的.log文件是否存在，如果不存在就将.index文件也删除
         val logFile = new File(file.getAbsolutePath.replace(IndexFileSuffix, LogFileSuffix))
         if(!logFile.exists) {
           warn("Found an orphaned index file, %s, with no corresponding log file.".format(file.getAbsolutePath))
@@ -195,6 +211,7 @@ class Log(val dir: File,
         }
       } else if(filename.endsWith(LogFileSuffix)) {
         // if its a log file, load the corresponding log segment
+        // 是.loh文件，先创建并加载LogSegment
         val start = filename.substring(0, filename.length - LogFileSuffix.length).toLong
         val indexFile = Log.indexFilename(dir, start)
         val segment = new LogSegment(dir = dir,
@@ -204,9 +221,11 @@ class Log(val dir: File,
                                      rollJitterMs = config.randomSegmentJitter,
                                      time = time,
                                      fileAlreadyExists = true)
-
+        // 判断对应的.index文件是否存在，如果不存在就根据.log文件重建.index文件
         if(indexFile.exists()) {
+          // .index文件存在
           try {
+              // 检查索引文件的完整性
               segment.index.sanityCheck()
           } catch {
             case e: java.lang.IllegalArgumentException =>
@@ -216,9 +235,12 @@ class Log(val dir: File,
           }
         }
         else {
+          // .index文件不存在
           error("Could not find index file corresponding to log file %s, rebuilding index...".format(segment.log.file.getAbsolutePath))
+          // 根据.log文件重建.index文件
           segment.recover(config.maxMessageSize)
         }
+        // 将LogSegment添加到segments跳表中
         segments.put(start, segment)
       }
     }
@@ -226,12 +248,18 @@ class Log(val dir: File,
     // Finally, complete any interrupted swap operations. To be crash-safe,
     // log files that are replaced by the swap segment should be renamed to .deleted
     // before the swap file is restored as the new segment file.
+    // 处理前面得到的.swap文件集合
     for (swapFile <- swapFiles) {
+      // 去掉.swap后缀的文件
       val logFile = new File(CoreUtils.replaceSuffix(swapFile.getPath, SwapFileSuffix, ""))
       val fileName = logFile.getName
+      // 根据文件名得到baseOffset
       val startOffset = fileName.substring(0, fileName.length - LogFileSuffix.length).toLong
+      // 获取对应的.index.swap文件
       val indexFile = new File(CoreUtils.replaceSuffix(logFile.getPath, LogFileSuffix, IndexFileSuffix) + SwapFileSuffix)
+      // 根据上面得到的信息创建OffsetIndex
       val index =  new OffsetIndex(indexFile, baseOffset = startOffset, maxIndexSize = config.maxIndexSize)
+      // 创建LogSegment
       val swapSegment = new LogSegment(new FileMessageSet(file = swapFile),
                                        index = index,
                                        baseOffset = startOffset,
@@ -239,11 +267,19 @@ class Log(val dir: File,
                                        rollJitterMs = config.randomSegmentJitter,
                                        time = time)
       info("Found log file %s from interrupted swap operation, repairing.".format(swapFile.getPath))
+      // 重建索引文件并验证日志文件
       swapSegment.recover(config.maxMessageSize)
+      // 查找swapSegment对应的日志压缩前的LogSegment集合
       val oldSegments = logSegments(swapSegment.baseOffset, swapSegment.nextOffset)
+      /**
+        * 将swapSegment放入segments跳表，
+        * 将oldSegments的LogSegment从segments跳表中删除，同时删除对应的日志文件和索引文件
+        * 将swapSegment对应日志文件的.swap后缀去掉
+        */
       replaceSegments(swapSegment, oldSegments.toSeq, isRecoveredSwapFile = true)
     }
 
+    // 如果segments为空，需要添加一个LogSegment作为activeSegment
     if(logSegments.size == 0) {
       // no existing segments, create a new mutable segment beginning at offset 0
       segments.put(0L, new LogSegment(dir = dir,
@@ -256,6 +292,7 @@ class Log(val dir: File,
                                      initFileSize = this.initFileSize(),
                                      preallocate = config.preallocate))
     } else {
+      // 进行Log的恢复工作
       recoverLog()
       // reset the index size of the currently active log segment to allow more entries
       activeSegment.index.resize(config.maxIndexSize)
@@ -268,20 +305,29 @@ class Log(val dir: File,
     nextOffsetMetadata = new LogOffsetMetadata(messageOffset, activeSegment.baseOffset, activeSegment.size.toInt)
   }
 
+  /**
+    * 进行Log的恢复工作，主要负责处理Broker非正常关闭时导致的消息异常，
+    * 需要将recoveryPoint ~ activeSegment中的所有消息进行验证，将验证失败的消息截断
+    */
   private def recoverLog() {
     // if we have the clean shutdown marker, skip recovery
+    // 如果broker上次是正常关闭的，则不需要恢复
     if(hasCleanShutdownFile) {
+      // 更新recoveryPoint为activeSegment的nextOffset
       this.recoveryPoint = activeSegment.nextOffset
       return
     }
 
     // okay we need to actually recovery this log
+    // 非正常关闭，需要进行恢复操作，得到recoveryPoint点开始的LogSegment集合
     val unflushed = logSegments(this.recoveryPoint, Long.MaxValue).iterator
+    // 遍历LogSegment集合
     while(unflushed.hasNext) {
       val curr = unflushed.next
       info("Recovering unflushed segment %d in log %s.".format(curr.baseOffset, name))
       val truncatedBytes =
         try {
+          // 使用LogSegment的recover()方法重建索引文件并验证日志文件，验证失败的部分会被截除
           curr.recover(config.maxMessageSize)
         } catch {
           case e: InvalidOffsetException =>
@@ -290,9 +336,11 @@ class Log(val dir: File,
                  "creating an empty one with starting offset " + startOffset)
             curr.truncateTo(startOffset)
         }
+      // LogSegment中是否有验证失败的消息
       if(truncatedBytes > 0) {
         // we had an invalid message, delete all remaining log
         warn("Corruption found in segment %d of log %s, truncating to offset %d.".format(curr.baseOffset, name, curr.nextOffset))
+        // 将剩余的LogSegment全部删除
         unflushed.foreach(deleteSegment)
       }
     }
@@ -1120,16 +1168,21 @@ object Log {
    * Parse the topic and partition out of the directory name of a log
    */
   def parseTopicPartitionName(dir: File): TopicAndPartition = {
+    // 获取目录名称
     val name: String = dir.getName
     if (name == null || name.isEmpty || !name.contains('-')) {
       throwException(dir)
     }
+    // 取出"-"的位置
     val index = name.lastIndexOf('-')
+    // "-"前面是topic名称
     val topic: String = name.substring(0, index)
+    // "-"后面是partition名称
     val partition: String = name.substring(index + 1)
     if (topic.length < 1 || partition.length < 1) {
       throwException(dir)
     }
+    // 构成TopicAndPartition对象
     TopicAndPartition(topic, partition.toInt)
   }
 

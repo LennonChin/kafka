@@ -69,6 +69,7 @@ class LogManager(val logDirs: Array[File],
   // 用于管理TopicAndPartition与Log之间的对应关系，底层使用ConcurrentHashMap实现
   private val logs = new Pool[TopicAndPartition, Log]()
 
+  // 保证每个log目录都存在且可读
   createAndValidateLogDirs(logDirs)
   // FileLock集合
   private val dirLocks = lockLogDirs(logDirs)
@@ -98,15 +99,27 @@ class LogManager(val logDirs: Array[File],
    * </ol>
    */
   private def createAndValidateLogDirs(dirs: Seq[File]) {
+    /**
+      * 美[kə'nɑnɪk(ə)l]英[kə'nɒnɪk(ə)l]
+      * adj.被收入真经篇目的；经典的；按照基督教教会法规的
+      * n.(布道时应穿的)法衣
+      * 网络标准；规范的；典型
+      */
     if(dirs.map(_.getCanonicalPath).toSet.size < dirs.size)
+      // log目录的实际个数不准确
       throw new KafkaException("Duplicate log directory found: " + logDirs.mkString(", "))
+    // 遍历目录
     for(dir <- dirs) {
+      // 判断目录是否存在
       if(!dir.exists) {
         info("Log directory '" + dir.getAbsolutePath + "' not found, creating it.")
+        // 不存在则创建目录
         val created = dir.mkdirs()
         if(!created)
+          // 如果创建失败则抛出异常
           throw new KafkaException("Failed to create data directory " + dir.getAbsolutePath)
       }
+      // 保证是目录且可读
       if(!dir.isDirectory || !dir.canRead)
         throw new KafkaException(dir.getAbsolutePath + " is not a readable log directory.")
     }
@@ -114,13 +127,18 @@ class LogManager(val logDirs: Array[File],
   
   /**
    * Lock all the given directories
+    * 对目录加锁，实现方式是在目录下创建一个.lock文件，然后对其Channel进行加锁
+    * 如果.lock文件的Channel被加锁了，说明该目录被锁了
    */
   private def lockLogDirs(dirs: Seq[File]): Seq[FileLock] = {
     dirs.map { dir =>
+      // 创建一个.lock后缀结尾的文件，并以该文件创建一个FileLock
       val lock = new FileLock(new File(dir, LockFile))
+      // 对该FileLock尝试进行加锁
       if(!lock.tryLock())
         throw new KafkaException("Failed to acquire lock on file .lock in " + lock.file.getParentFile.getAbsolutePath + 
                                ". A Kafka instance in another process or thread is using this directory.")
+      // 返回FileLock
       lock
     }
   }
@@ -130,28 +148,40 @@ class LogManager(val logDirs: Array[File],
    */
   private def loadLogs(): Unit = {
     info("Loading logs.")
-
+    // 用于保存log目录对应的线程池
     val threadPools = mutable.ArrayBuffer.empty[ExecutorService]
     val jobs = mutable.Map.empty[File, Seq[Future[_]]]
 
+    // 遍历log目录，对每个log目录进行操作
     for (dir <- this.logDirs) {
+      // 创建线程池，线程个数为ioThreads
       val pool = Executors.newFixedThreadPool(ioThreads)
+      // 将线程池添加到threadPools进行记录
       threadPools.append(pool)
 
+      /**
+        * 检测broker上次是否是正常关闭的
+        * 如果是正常关闭的，在目录下会保存有一个.kafka_cleanshutdown的文件
+        * 如果该文件不存在，说明broker上次是非正常关闭的
+        */
       val cleanShutdownFile = new File(dir, Log.CleanShutdownFile)
 
       if (cleanShutdownFile.exists) {
+        // 正常关闭
         debug(
           "Found clean shutdown file. " +
           "Skipping recovery for all logs in data directory: " +
           dir.getAbsolutePath)
       } else {
         // log recovery itself is being performed by `Log` class during initialization
+        // 非正常关闭，修改brokerState为RecoveringFromUncleanShutdown
         brokerState.newState(RecoveringFromUncleanShutdown)
       }
 
+      // 读取每个log目录下的RecoveryPointCheckpoint文件并生成TopicAndPartition与recoveryPoint的对应关闭
       var recoveryPoints = Map[TopicAndPartition, Long]()
       try {
+        // 载入recoveryPoints
         recoveryPoints = this.recoveryPointCheckpoints(dir).read
       } catch {
         case e: Exception => {
@@ -160,18 +190,23 @@ class LogManager(val logDirs: Array[File],
         }
       }
 
-      val jobsForDir = for {
+      // 遍历所有的log目录的子文件，将文件过滤，只保留目录
+      val jobsForDir = for { // 这个括号内是遍历条件
         dirContent <- Option(dir.listFiles).toList
         logDir <- dirContent if logDir.isDirectory
-      } yield {
+      } yield { // yield代码块是for的循环体
+        // 为每个log目录创建一个Runnable任务
         CoreUtils.runnable {
           debug("Loading log '" + logDir.getName + "'")
-
+          // 从目录名解析出Topic名称和分区编号
           val topicPartition = Log.parseTopicPartitionName(logDir)
+          // 获取Log对应的配置
           val config = topicConfigs.getOrElse(topicPartition.topic, defaultConfig)
+          // 获取Log对应的recoveryPoint
           val logRecoveryPoint = recoveryPoints.getOrElse(topicPartition, 0L)
-
+          // 创建Log对象
           val current = new Log(logDir, config, logRecoveryPoint, scheduler, time)
+          // 将Log对象保存到logs集合中，所有分区的Log成功加载完成
           val previous = this.logs.put(topicPartition, current)
 
           if (previous != null) {
@@ -181,14 +216,16 @@ class LogManager(val logDirs: Array[File],
           }
         }
       }
-
+      // 将jobsForDir中的所有任务放到线程池中执行，并将Future形成Seq，保存到jobs中
       jobs(cleanShutdownFile) = jobsForDir.map(pool.submit).toSeq
     }
 
 
     try {
+      // 等待jobs中的Runnable完成
       for ((cleanShutdownFile, dirJobs) <- jobs) {
         dirJobs.foreach(_.get)
+        // 删除.kafka_cleanshutdown文件
         cleanShutdownFile.delete()
       }
     } catch {
@@ -197,6 +234,7 @@ class LogManager(val logDirs: Array[File],
         throw e.getCause
       }
     } finally {
+      // 关闭全部的线程池
       threadPools.foreach(_.shutdown())
     }
 
@@ -367,6 +405,7 @@ class LogManager(val logDirs: Array[File],
    * Get the log if it exists, otherwise return None
    */
   def getLog(topicAndPartition: TopicAndPartition): Option[Log] = {
+    // 从logs目录中根据Topic和Partition获取Log
     val log = logs.get(topicAndPartition)
     if (log == null)
       None
@@ -377,48 +416,63 @@ class LogManager(val logDirs: Array[File],
   /**
    * Create a log for the given topic and the given partition
    * If the log already exists, just return a copy of the existing log
+    * 根据指定的Topic和Partition创建Log对象，如果已存在就直接返回存在的
+    * 会选取文件最少的log目录下创建
    */
   def createLog(topicAndPartition: TopicAndPartition, config: LogConfig): Log = {
+    // 加锁
     logCreationOrDeletionLock synchronized {
       var log = logs.get(topicAndPartition)
       
       // check if the log has already been created in another thread
+      // Log已存在，直接返回
       if(log != null)
         return log
       
       // if not, create it
+      // 不存在，选择Log最少的目录
       val dataDir = nextLogDir()
+      // 在选择的log目录下创建文件，文件名为"topic名称 - partition序号"
       val dir = new File(dataDir, topicAndPartition.topic + "-" + topicAndPartition.partition)
       dir.mkdirs()
+      // 根据文件创建Log对象
       log = new Log(dir, 
                     config,
                     recoveryPoint = 0L,
                     scheduler,
                     time)
+      // 将Log放入logs池中
       logs.put(topicAndPartition, log)
       info("Created log for partition [%s,%d] in %s with properties {%s}."
            .format(topicAndPartition.topic, 
                    topicAndPartition.partition, 
                    dataDir.getAbsolutePath,
                    {import JavaConversions._; config.originals.mkString(", ")}))
+      // 返回log
       log
     }
   }
 
   /**
    *  Delete a log.
+    *  删除Log
    */
   def deleteLog(topicAndPartition: TopicAndPartition) {
     var removedLog: Log = null
+    // 加锁
     logCreationOrDeletionLock synchronized {
+      // 从logs集合中移除
       removedLog = logs.remove(topicAndPartition)
     }
     if (removedLog != null) {
       //We need to wait until there is no more cleaning task on the log to be deleted before actually deleting it.
       if (cleaner != null) {
+        // 停止对此Log的压缩操作，阻塞等待压缩状态的改变
         cleaner.abortCleaning(topicAndPartition)
+        // 更新cleaner-offset-checkpoint文件
         cleaner.updateCheckpoints(removedLog.dir.getParentFile)
       }
+      // 删除相关的日志文件、索引文件及目录
       removedLog.delete()
       info("Deleted log for partition [%s,%d] in %s."
            .format(topicAndPartition.topic,
@@ -434,14 +488,18 @@ class LogManager(val logDirs: Array[File],
    */
   private def nextLogDir(): File = {
     if(logDirs.size == 1) {
+      // 只有一个log目录，直接返回
       logDirs(0)
     } else {
       // count the number of logs in each parent directory (including 0 for empty directories
+      // 有多个log目录
+      // 计算每个log目录中的Log数量
       val logCounts = allLogs.groupBy(_.dir.getParent).mapValues(_.size)
       val zeros = logDirs.map(dir => (dir.getPath, 0)).toMap
       var dirCounts = (zeros ++ logCounts).toBuffer
     
       // choose the directory with the least logs in it
+      // 排序，选择Log最少的log目录
       val leastLoaded = dirCounts.sortBy(_._2).head
       new File(leastLoaded._1)
     }
