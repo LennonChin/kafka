@@ -56,10 +56,10 @@ class FileMessageSet private[kafka](@volatile var file: File,
     **/
   private val _size =
     if(isSlice)
-      // 如果是分片，即为end - start
+      // 如果是分片，即为end - start，不对文件大小进行检查
       new AtomicInteger(end - start) // don't check the file size if this is just a slice view
     else
-      // 否则表示整个日志文件的大小，需要进行计算
+      // 否则需要对文件大小进行检查
       new AtomicInteger(math.min(channel.size.toInt, end) - start)
 
   /* if this is not a slice, update the file pointer to the end of the file */
@@ -67,6 +67,7 @@ class FileMessageSet private[kafka](@volatile var file: File,
     /**
       * set the file position to the last byte in the file
       * 如果不是分片，则将FileChannel的position置为文件末尾，即从文件末尾开始写入数据
+      * 会检查文件大小，取文件大小和end参数的最小值
       **/
     channel.position(math.min(channel.size.toInt, end))
 

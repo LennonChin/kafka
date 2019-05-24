@@ -33,30 +33,48 @@ object Message {
   /**
    * The current offset and size for all the fixed-length fields
    */
+  // CRC偏移量
   val CrcOffset = 0
+  // CRC长度，4字节
   val CrcLength = 4
+  // 魔数偏移量
   val MagicOffset = CrcOffset + CrcLength
+  // 魔数长度，1字节
   val MagicLength = 1
+  // attributes偏移量
   val AttributesOffset = MagicOffset + MagicLength
+  // attributes长度，1字节
   val AttributesLength = 1
   // Only message format version 1 has the timestamp field.
+  // 时间戳偏移量
   val TimestampOffset = AttributesOffset + AttributesLength
+  // 时间戳长度，8字节
   val TimestampLength = 8
+  // V0版本key size的偏移量（V0版本没有时间戳数据）
   val KeySizeOffset_V0 = AttributesOffset + AttributesLength
+  // V1版本key size的偏移量（V1版本有时间戳数据）
   val KeySizeOffset_V1 = TimestampOffset + TimestampLength
+  // key size的长度，4字节
   val KeySizeLength = 4
+  // V0版本Key偏移量
   val KeyOffset_V0 = KeySizeOffset_V0 + KeySizeLength
+  // V1版本Key偏移量
   val KeyOffset_V1 = KeySizeOffset_V1 + KeySizeLength
+  // value size的长度，4字节
   val ValueSizeLength = 4
 
+  // 消息的头信息长度
   private val MessageHeaderSizeMap = Map (
+    // V0版本，没有时间戳
     (0: Byte) -> (CrcLength + MagicLength + AttributesLength + KeySizeLength + ValueSizeLength),
+    // V1版本，有时间戳
     (1: Byte) -> (CrcLength + MagicLength + AttributesLength + TimestampLength + KeySizeLength + ValueSizeLength))
 
   /**
    * The amount of overhead bytes in a message
    * This value is only used to check if the message size is valid or not. So the minimum possible message bytes is
    * used here, which comes from a message in message format V0 with empty key and value.
+    * 消息的overhead的大小，不包含键和值数据的长度
    */
   val MinMessageOverhead = KeyOffset_V0 + ValueSizeLength
   
@@ -64,35 +82,42 @@ object Message {
    * The "magic" value
    * When magic value is 0, the message uses absolute offset and does not have a timestamp field.
    * When magic value is 1, the message uses relative offset and has a timestamp field.
+    * 魔数，V0版本为0，V1版本为1
    */
   val MagicValue_V0: Byte = 0
   val MagicValue_V1: Byte = 1
+  // 当前魔数为1
   val CurrentMagicValue: Byte = 1
 
   /**
    * Specifies the mask for the compression code. 3 bits to hold the compression codec.
    * 0 is reserved to indicate no compression
+    * 取压缩器值的掩码
    */
-  val CompressionCodeMask: Int = 0x07
+  val CompressionCodeMask: Int = 0x07 // 00000000 00000000 00000000 00000111
   /**
    * Specifies the mask for timestamp type. 1 bit at the 4th least significant bit.
    * 0 for CreateTime, 1 for LogAppendTime
+    * 取时间戳类型的掩码
    */
-  val TimestampTypeMask: Byte = 0x08
-  val TimestampTypeAttributeBitOffset: Int = 3
+  val TimestampTypeMask: Byte = 0x08 // 00000000 00000000 00000000 00001000
+  val TimestampTypeAttributeBitOffset: Int = 3 // 时间戳类型在attributes数据中的偏移量
 
   /**
    * Compression code for uncompressed messages
+    * 表示无压缩器
    */
   val NoCompression: Int = 0
 
   /**
    * To indicate timestamp is not defined so "magic" value 0 will be used.
+    * 表示无时间戳数据
    */
   val NoTimestamp: Long = -1
 
   /**
    * Give the header size difference between different message versions.
+    * 比较两个魔数版本的消息的头信息的长度差
    */
   def headerSizeDiff(fromMagicValue: Byte, toMagicValue: Byte) : Int =
     MessageHeaderSizeMap(toMagicValue) - MessageHeaderSizeMap(fromMagicValue)
@@ -136,61 +161,81 @@ class Message(val buffer: ByteBuffer,
 
   /**
    * A constructor to create a Message
-   * @param bytes The payload of the message
-   * @param key The key of the message (null, if none)
-   * @param timestamp The timestamp of the message.
-   * @param timestampType The timestamp type of the message.
-   * @param codec The compression codec used on the contents of the message (if any)
-   * @param payloadOffset The offset into the payload array used to extract payload
-   * @param payloadSize The size of the payload to use
-   * @param magicValue the magic value to use
+   * @param bytes The payload of the message 值数据载荷
+   * @param key The key of the message (null, if none) 键
+   * @param timestamp The timestamp of the message. 时间戳
+   * @param timestampType The timestamp type of the message. 时间戳类型
+   * @param codec The compression codec used on the contents of the message (if any) 压缩器
+   * @param payloadOffset The offset into the payload array used to extract payload 读取bytes时的起始offset
+   * @param payloadSize The size of the payload to use 读取bytes的字节数，payloadOffset和payloadSize用于控制量化读取bytes数组
+   * @param magicValue the magic value to use 魔数
    */
-  def this(bytes: Array[Byte], 
+  def this(bytes: Array[Byte],
            key: Array[Byte],
            timestamp: Long,
            timestampType: TimestampType,
-           codec: CompressionCodec, 
-           payloadOffset: Int, 
+           codec: CompressionCodec,
+           payloadOffset: Int,
            payloadSize: Int,
            magicValue: Byte) = {
     this(ByteBuffer.allocate(Message.CrcLength +
                              Message.MagicLength +
                              Message.AttributesLength +
+                              // 魔数为V0（值为0）时没有时间戳，为V1（值为1）时有时间戳
                              (if (magicValue == Message.MagicValue_V0) 0
                               else Message.TimestampLength) +
-                             Message.KeySizeLength + 
-                             (if(key == null) 0 else key.length) + 
-                             Message.ValueSizeLength + 
-                             (if(bytes == null) 0 
-                              else if(payloadSize >= 0) payloadSize 
+                             Message.KeySizeLength +
+                              // 键长度，键为空时，键长度为0
+                             (if(key == null) 0 else key.length) +
+                             Message.ValueSizeLength +
+                              // 值长度，bytes为空时，值长度为0
+                              // bytes不为空时，如果payloadSize大于等于0则取payloadSize
+                              // bytes不为空时，如果payloadSize小于0则计算bytes.length - payloadOffset
+                             (if(bytes == null) 0
+                              else if(payloadSize >= 0) payloadSize
                               else bytes.length - payloadOffset)))
+    // 验证时间戳和魔数，这里的验证会根据魔数版本来判断时间戳是否合法
     validateTimestampAndMagicValue(timestamp, magicValue)
     // skip crc, we will fill that in at the end
+    // 先跳过CRC，CRC部分会在最后填充
     buffer.position(MagicOffset)
+    // 填入魔数
     buffer.put(magicValue)
     val attributes: Byte =
       if (codec.codec > 0)
+        // 有压缩器，需要写入压缩器类型及时间戳类型
         timestampType.updateAttributes((CompressionCodeMask & codec.codec).toByte)
+      // 无压缩器，attribute为0
       else 0
+    // 填入attributes
     buffer.put(attributes)
     // Only put timestamp when "magic" value is greater than 0
     if (magic > MagicValue_V0)
+      // 魔数大于V0时，填入时间戳
       buffer.putLong(timestamp)
-    if(key == null) {
+    if(key == null) { // 键为空
+      // 键长度，键为空时填入-1
       buffer.putInt(-1)
-    } else {
+    } else { // 键不为空
+      // 键长度，键不为空时填入键的长度
       buffer.putInt(key.length)
+      // 填入键
       buffer.put(key, 0, key.length)
     }
+    // 计算值长度
     val size = if(bytes == null) -1
-               else if(payloadSize >= 0) payloadSize 
+               else if(payloadSize >= 0) payloadSize
                else bytes.length - payloadOffset
+    // 填入值长度
     buffer.putInt(size)
     if(bytes != null)
+      // 值不为空，填入值
       buffer.put(bytes, payloadOffset, size)
+    // rewind，position移到0，准备填入CRC
     buffer.rewind()
 
     // now compute the checksum and fill it in
+    // 计算并填入CRC
     Utils.writeUnsignedInt(buffer, CrcOffset, computeChecksum)
   }
   
@@ -425,10 +470,13 @@ class Message(val buffer: ByteBuffer,
    * Validate the timestamp and "magic" value
    */
   private def validateTimestampAndMagicValue(timestamp: Long, magic: Byte) {
+    // 魔数必须是V0或V1版本中的一个
     if (magic != MagicValue_V0 && magic != MagicValue_V1)
       throw new IllegalArgumentException(s"Invalid magic value $magic")
+    // 时间戳若小于0，则必须是-1
     if (timestamp < 0 && timestamp != NoTimestamp)
       throw new IllegalArgumentException(s"Invalid message timestamp $timestamp")
+    // V0版本的魔数，时间戳必须是-1
     if (magic == MagicValue_V0 && timestamp != NoTimestamp)
       throw new IllegalArgumentException(s"Invalid timestamp $timestamp. Timestamp must be ${NoTimestamp} when magic = ${MagicValue_V0}")
   }

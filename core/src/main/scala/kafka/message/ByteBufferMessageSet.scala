@@ -305,10 +305,12 @@ class ByteBufferMessageSet(val buffer: ByteBuffer) extends MessageSet with Loggi
 
   private def shallowValidBytes: Int = {
     if (shallowValidByteCount < 0) {
+      // 说明是浅层消息，计算所有浅层消息的载荷大小
       this.shallowValidByteCount = this.internalIterator(isShallow = true).map { messageAndOffset =>
         MessageSet.entrySize(messageAndOffset.message)
       }.sum
     }
+    // 否则是压缩的，有深层消息
     shallowValidByteCount
   }
 
@@ -413,17 +415,20 @@ class ByteBufferMessageSet(val buffer: ByteBuffer) extends MessageSet with Loggi
 
   /**
    * Update the offsets for this message set and do further validation on messages including:
-   * 1. Messages for compacted topics must have keys
+    * 更新集合中Message的offset，同时验证消息
+   * 1. Messages for compacted topics must have keys 压缩的消息必须有键
    * 2. When magic value = 1, inner messages of a compressed message set must have monotonically increasing offsets
-   *    starting from 0.
-   * 3. When magic value = 1, validate and maybe overwrite timestamps of messages.
+   *    starting from 0. 如果魔数为1，内层压缩消息的offset必须是从offset单调递增的
+   * 3. When magic value = 1, validate and maybe overwrite timestamps of messages. 当魔数为1，验证时间戳，同时在必要条件下重写时间戳
    *
    * This method will convert the messages in the following scenarios:
-   * A. Magic value of a message = 0 and messageFormatVersion is 1
-   * B. Magic value of a message = 1 and messageFormatVersion is 0
+    * 在下面的两类情况下会进行消息转换（即消息魔数与messageFormatVersion不一致时）
+   * A. Magic value of a message = 0 and messageFormatVersion is 1 魔数为0，messageFormatVersion为1
+   * B. Magic value of a message = 1 and messageFormatVersion is 0 模式为1，messageFormatVersion为0
    *
    * If no format conversion or value overwriting is required for messages, this method will perform in-place
    * operations and avoid re-compression.
+    * 如果不需要进行消息格式转换，且不需要重写消息的部分数据，将会复用当前的ByteBufferMessageSet以避免重新压缩
    *
    * Returns the message set and a boolean indicating whether the message sizes may have changed.
     * 用于验证消息并分配offset
@@ -569,34 +574,78 @@ class ByteBufferMessageSet(val buffer: ByteBuffer) extends MessageSet with Loggi
   // We create this method to avoid a memory copy. It reads from the original message set and directly
   // writes the converted messages into new message set buffer. Hence we don't need to allocate memory for each
   // individual message during message format conversion.
+  /**
+    * Message的魔数不一致问题，需要进行统一，这可能会导致消息总长度变化，需要创建新的ByteBufferMessageSet。
+    * 同时还会进行offset的分配，验证并更新CRC32、时间戳等信息。
+    * @param offsetCounter offset自增器
+    * @param compactedTopic 是否是压缩主题
+    * @param now 当前时间，用于在时间戳类型为CREATE_TIME时验证消息时间戳
+    * @param timestampType 时间戳类型
+    * @param messageTimestampDiffMaxMs
+    * @param toMagicValue 转换后的魔数
+    * @return 转换后的ByteBufferMessageSet对象
+    *
+    * ByteBufferMessageSet中单条消息格式
+    * |------- | ---- | ----- | ------|------------|-----------|----------|-----|------------|------ |
+    * | offset | size | CRC32 | magic | attributes | timestamp | key size | key | value size | value |
+    * |------- | ---- | ----- | ------|------------|-----------|----------|-----|------------|------ |
+    */
   private def convertNonCompressedMessages(offsetCounter: LongRef,
                                            compactedTopic: Boolean,
                                            now: Long,
                                            timestampType: TimestampType,
                                            messageTimestampDiffMaxMs: Long,
                                            toMagicValue: Byte): ByteBufferMessageSet = {
-    val sizeInBytesAfterConversion = shallowValidBytes + this.internalIterator(isShallow = true).map { messageAndOffset =>
+    // 计算转换后需要的字节大小
+    val sizeInBytesAfterConversion = shallowValidBytes + // 所有消息的载荷大小
+      this.internalIterator(isShallow = true).map { messageAndOffset =>
       Message.headerSizeDiff(messageAndOffset.message.magic, toMagicValue)
-    }.sum
+    }.sum // 所有消息头信息的大小
+    // 根据转换后的字节大小创建ByteBuffer
     val newBuffer = ByteBuffer.allocate(sizeInBytesAfterConversion)
     var newMessagePosition = 0
+    // 因为无压缩，直接浅层迭代消息
     this.internalIterator(isShallow = true).foreach { case MessageAndOffset(message, _) =>
+      // 验证消息的键，如果是压缩主题，消息必须要有键
       validateMessageKey(message, compactedTopic)
+      // 验证时间戳
       validateTimestamp(message, now, timestampType, messageTimestampDiffMaxMs)
       newBuffer.position(newMessagePosition)
+      // 写入偏移量
       newBuffer.putLong(offsetCounter.getAndIncrement())
+      // 新的消息大小 = 消息数据大小 + 消息头信息大小
       val newMessageSize = message.size + Message.headerSizeDiff(message.magic, toMagicValue)
+      // 写入新的消息大小
       newBuffer.putInt(newMessageSize)
+      // 从当前的position位置开始创建缓冲区副本
       val newMessageBuffer = newBuffer.slice()
+      // 重设limit为新消息大小，此时position ~ limit之间的空间是用于装载消息数据的
       newMessageBuffer.limit(newMessageSize)
+      // 转换消息并写入到newMessageBuffer缓冲区
       message.convertToBuffer(toMagicValue, newMessageBuffer, now, timestampType)
-
+      // 更新position
       newMessagePosition += MessageSet.LogOverhead + newMessageSize
     }
+    // position置0
     newBuffer.rewind()
+    // 返回以newBuffer创建ByteBufferMessageSet对象
     new ByteBufferMessageSet(newBuffer)
   }
 
+  /**
+    * 验证非压缩消息并分配offset
+    * ByteBufferMessageSet中单条消息格式
+    * |------- | ---- | ----- | ------|------------|-----------|----------|-----|------------|------ |
+    * | offset | size | CRC32 | magic | attributes | timestamp | key size | key | value size | value |
+    * |------- | ---- | ----- | ------|------------|-----------|----------|-----|------------|------ |
+    * 这个方法只会更新offset，验证并更新CRC32、时间戳等信息
+    * @param offsetCounter offset自增器
+    * @param now 当前时间戳
+    * @param compactedTopic 是否是压缩主题
+    * @param timestampType 时间戳类型
+    * @param timestampDiffMaxMs
+    * @return
+    */
   private def validateNonCompressedMessagesAndAssignOffsetInPlace(offsetCounter: LongRef,
                                                                   now: Long,
                                                                   compactedTopic: Boolean,
@@ -607,20 +656,31 @@ class ByteBufferMessageSet(val buffer: ByteBuffer) extends MessageSet with Loggi
     buffer.mark()
     while (messagePosition < sizeInBytes - MessageSet.LogOverhead) {
       buffer.position(messagePosition)
+      // 写入offset
       buffer.putLong(offsetCounter.getAndIncrement())
+      // 获取消息大小
       val messageSize = buffer.getInt()
+      // 得到标识消息数据的Buffer切片
       val messageBuffer = buffer.slice()
+      // 设置limit为当前遍历到的Message数据尾部
       messageBuffer.limit(messageSize)
+      // 创建Message对象
       val message = new Message(messageBuffer)
+      // 验证消息的键，如果是压缩主题，消息必须要有键
       validateMessageKey(message, compactedTopic)
       if (message.magic > Message.MagicValue_V0) {
+        // 当魔数大于V0时，还需要验证消息的时间戳
         validateTimestamp(message, now, timestampType, timestampDiffMaxMs)
-        if (timestampType == TimestampType.LOG_APPEND_TIME) {
+        if (timestampType == TimestampType.LOG_APPEND_TIME) { // 时间戳类型为追加类型
+          // 写入当前时间戳
           message.buffer.putLong(Message.TimestampOffset, now)
+          // 更新attributes中的时间戳类型标识位
           message.buffer.put(Message.AttributesOffset, timestampType.updateAttributes(message.attributes))
+          // 写入CRC校验码
           Utils.writeUnsignedInt(message.buffer, Message.CrcOffset, message.computeChecksum)
         }
       }
+      // 更新messagePosition
       messagePosition += MessageSet.LogOverhead + messageSize
     }
     buffer.reset()
@@ -640,9 +700,11 @@ class ByteBufferMessageSet(val buffer: ByteBuffer) extends MessageSet with Loggi
                                 now: Long,
                                 timestampType: TimestampType,
                                 timestampDiffMaxMs: Long) {
+    // 时间戳类型为创建时间，消息时间戳与当前时间的间隔不可大于timestampDiffMaxMs
     if (timestampType == TimestampType.CREATE_TIME && math.abs(message.timestamp - now) > timestampDiffMaxMs)
       throw new InvalidTimestampException(s"Timestamp ${message.timestamp} of message is out of range. " +
         s"The timestamp should be within [${now - timestampDiffMaxMs}, ${now + timestampDiffMaxMs}")
+    // 时间戳类型不可为追加时间
     if (message.timestampType == TimestampType.LOG_APPEND_TIME)
       throw new InvalidTimestampException(s"Invalid timestamp type in message $message. Producer should not set " +
         s"timestamp type to LogAppendTime.")

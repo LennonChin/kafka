@@ -104,6 +104,7 @@ class OffsetIndex(@volatile private[this] var _file: File, val baseOffset: Long,
       // 返回MappedByteBuffer
       idx
     } finally {
+      // 关闭RandomAccessFile对象并吞掉可能会产生的异常
       CoreUtils.swallow(raf.close())
     }
   }
@@ -157,12 +158,12 @@ class OffsetIndex(@volatile private[this] var _file: File, val baseOffset: Long,
   }
 
   /**
-   * Find the largest offset less than or equal to the given targetOffset 
+   * Find the largest offset less than or equal to the given targetOffset
    * and return a pair holding this offset and its corresponding physical file position.
-   * 
+   *
    * @param targetOffset The offset to look up.
-   * 
-   * @return The offset found and the corresponding file position for this offset. 
+   *
+   * @return The offset found and the corresponding file position for this offset.
    * If the target offset is smaller than the least entry in the index (or the index is empty),
    * the pair (baseOffset, 0) is returned.
    */
@@ -185,23 +186,23 @@ class OffsetIndex(@volatile private[this] var _file: File, val baseOffset: Long,
   /**
    * Find the slot in which the largest offset less than or equal to the given
    * target offset is stored.
-    * 找到小于或等于给定targetOffset的最大offset的槽位（即索引）
-   * 
+    * 找到小于或等于给定targetOffset的最大offset的槽位（即索引序号）
+   *
    * @param idx The index buffer 索引项Buffer
    * @param targetOffset The offset to look for 需要查找的offset
-   * 
+   *
    * @return The slot found or -1 if the least entry in the index is larger than the target offset or the index is empty
    */
   private def indexSlotFor(idx: ByteBuffer, targetOffset: Long): Int = {
     // we only store the difference from the base offset so calculate that
     // 根据baseOffset计算相对offset
     val relOffset = targetOffset - baseOffset
-    
+
     // check if the index is empty
     // 如果文件中没有索引项，直接返回-1
     if (_entries == 0)
       return -1
-    
+
     // check if the target offset is smaller than the least offset
     /**
       * 找到第0个offset的相对baseOffset的偏移量
@@ -210,7 +211,7 @@ class OffsetIndex(@volatile private[this] var _file: File, val baseOffset: Long,
       */
     if (relativeOffset(idx, 0) > relOffset)
       return -1
-      
+
     // binary search for the entry
     // 进行二分搜索查找符合的offset
     var lo = 0
@@ -293,12 +294,14 @@ class OffsetIndex(@volatile private[this] var _file: File, val baseOffset: Long,
   
   /**
    * Truncate the entire index, deleting all entries
+    * 裁剪索引项，删除所有索引
    */
   def truncate() = truncateToEntries(0)
-  
+
   /**
    * Remove all entries from the index which have an offset greater than or equal to the given offset.
    * Truncating to an offset larger than the largest in the index has no effect.
+    * 裁剪索引项，删除offset之后（包括给定的offset）的所有索引项
    */
   def truncateTo(offset: Long) {
     // 加锁
@@ -308,7 +311,7 @@ class OffsetIndex(@volatile private[this] var _file: File, val baseOffset: Long,
         * 但操作副本的指针量时原Buffer的指针量不变
         */
       val idx = mmap.duplicate
-      // 在buffer中找到小于或等于offset的槽位（序号）
+      // 在buffer中找到小于或等于offset的槽位（索引序号）
       val slot = indexSlotFor(idx, offset)
 
       /* There are 3 cases for choosing the new size
@@ -337,6 +340,7 @@ class OffsetIndex(@volatile private[this] var _file: File, val baseOffset: Long,
 
   /**
    * Truncates index to a known number of entries.
+    * 裁剪操作，裁剪给定的entries序号之后的索引项
    */
   private def truncateToEntries(entries: Int) {
     inLock(lock) {
@@ -368,23 +372,30 @@ class OffsetIndex(@volatile private[this] var _file: File, val baseOffset: Long,
   def resize(newSize: Int) {
     inLock(lock) {
       val raf = new RandomAccessFile(_file, "rw")
+      // 合法化新大小
       val roundedNewSize = roundToExactMultiple(newSize, 8)
+      // 当前mmap的position
       val position = mmap.position
-      
+
       /* Windows won't let us modify the file length while the file is mmapped :-( */
       if (Os.isWindows)
+        // windows下不能直接修改文件大小，需要手动清空底层的缓冲区
         forceUnmap(mmap)
       try {
+        // 修改文件大小为新的大小
         raf.setLength(roundedNewSize)
+        // 重新映射MappedByteBuffer
         mmap = raf.getChannel().map(FileChannel.MapMode.READ_WRITE, 0, roundedNewSize)
+        // 更新记录值
         _maxEntries = mmap.limit / 8
+        // 更新position
         mmap.position(position)
       } finally {
         CoreUtils.swallow(raf.close())
       }
     }
   }
-  
+
   /**
    * Forcefully free the buffer's mmap. We do this only on windows.
    */
@@ -460,7 +471,7 @@ class OffsetIndex(@volatile private[this] var _file: File, val baseOffset: Long,
   private def roundToExactMultiple(number: Int, factor: Int) = factor * (number / factor)
   
   /**
-   * Execute the given function in a lock only if we are running on windows. We do this 
+   * Execute the given function in a lock only if we are running on windows. We do this
    * because Windows won't let us resize a file while it is mmapped. As a result we have to force unmap it
    * and this requires synchronizing reads.
    */

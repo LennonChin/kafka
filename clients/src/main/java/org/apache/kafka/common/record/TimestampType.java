@@ -23,7 +23,9 @@ import java.util.NoSuchElementException;
  * The timestamp type of the records.
  */
 public enum TimestampType {
-    NO_TIMESTAMP_TYPE(-1, "NoTimestampType"), CREATE_TIME(0, "CreateTime"), LOG_APPEND_TIME(1, "LogAppendTime");
+    NO_TIMESTAMP_TYPE(-1, "NoTimestampType"), // -1，无时间戳类型
+    CREATE_TIME(0, "CreateTime"), // 0，创建时间
+    LOG_APPEND_TIME(1, "LogAppendTime"); // 1，追加时间
 
     public final int id;
     public final String name;
@@ -33,6 +35,7 @@ public enum TimestampType {
     }
 
     public byte updateAttributes(byte attributes) {
+        // 会根据时间戳类型决定写入attributes的第3位数据
         return this == CREATE_TIME ?
             (byte) (attributes & ~Record.TIMESTAMP_TYPE_MASK) : (byte) (attributes | Record.TIMESTAMP_TYPE_MASK);
     }
