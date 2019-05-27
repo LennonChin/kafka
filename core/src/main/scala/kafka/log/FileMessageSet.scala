@@ -200,7 +200,7 @@ class FileMessageSet private[kafka](@volatile var file: File,
     val position = start + writePosition
     // 计算可写数据大小
     val count = math.min(size, sizeInBytes)
-    // 进行写入，使用Channel的transfer方法，并记录写入的数据量字节数
+    // 进行写入，使用Channel的transfer方法（零拷贝），并记录写入的数据量字节数
     val bytesTransferred = (destChannel match {
       case tl: TransportLayer => tl.transferFrom(channel, position, count)
       case dc => channel.transferTo(position, count, dc)

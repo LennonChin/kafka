@@ -70,7 +70,7 @@ object ByteBufferMessageSet {
             if (message.magic != magicAndTimestamp.magic)
               throw new IllegalArgumentException("Messages in the message set must have same magic value")
             // Use inner offset if magic value is greater than 0
-            // 魔数为1.写入的是相对offset；魔数为0，写的是offset
+            // 魔数为1，写入的是相对offset；魔数为0，写的是offset
             if (magicAndTimestamp.magic > Message.MagicValue_V0)
               output.writeLong(offsetAssigner.toInnerOffset(offset))
             else
@@ -92,27 +92,38 @@ object ByteBufferMessageSet {
     }
   }
 
-  /** Deep iterator that decompresses the message sets and adjusts timestamp and offset if needed. */
+  /**
+    * Deep iterator that decompresses the message sets and adjusts timestamp and offset if needed.
+    * 返回一个深层迭代器，用于迭代压缩消息，如果有需要会调整时间戳和offset
+    * @param wrapperMessageAndOffset 外层消息的MessageAndOffset对象
+    * @return
+    */
   def deepIterator(wrapperMessageAndOffset: MessageAndOffset): Iterator[MessageAndOffset] = {
 
     import Message._
 
     new IteratorTemplate[MessageAndOffset] {
 
+      // 解析外层消息的MessageAndOffset对象
       val MessageAndOffset(wrapperMessage, wrapperMessageOffset) = wrapperMessageAndOffset
 
+      // 检查外层消息的载荷，因为内层消息存在外层消息的载荷中
       if (wrapperMessage.payload == null)
         throw new KafkaException(s"Message payload is null: $wrapperMessage")
 
+      // 根据魔数处理时间戳和时间戳类型
       val wrapperMessageTimestampOpt: Option[Long] =
         if (wrapperMessage.magic > MagicValue_V0) Some(wrapperMessage.timestamp) else None
       val wrapperMessageTimestampTypeOpt: Option[TimestampType] =
         if (wrapperMessage.magic > MagicValue_V0) Some(wrapperMessage.timestampType) else None
 
+      // 用于标记最后一个内层消息的offset
       var lastInnerOffset = -1L
 
       val messageAndOffsets = {
+        // 根据内层消息构造ByteBufferBackedInputStream流
         val inputStream = new ByteBufferBackedInputStream(wrapperMessage.payload)
+        // 根据压缩器，ByteBufferBackedInputStream流构造DataInputStream流，装饰器模式
         val compressed = try {
           new DataInputStream(CompressionFactory(wrapperMessage.compressionCodec, wrapperMessage.magic, inputStream))
         } catch {
@@ -120,11 +131,14 @@ object ByteBufferMessageSet {
             throw new InvalidMessageException(s"Failed to instantiate input stream compressed with ${wrapperMessage.compressionCodec}", ioe)
         }
 
+        // 用于存放内层消息
         val innerMessageAndOffsets = new ArrayDeque[MessageAndOffset]()
         try {
+          // 不断循环，读取compressed流中的数据，添加到innerMessageAndOffsets
           while (true)
             innerMessageAndOffsets.add(readMessageFromStream(compressed))
         } catch {
+          // 当读取到末尾时会抛出EOFException异常，结束读取即可
           case eofe: EOFException =>
             // we don't do anything at all here, because the finally
             // will close the compressed input stream, and we simply
@@ -134,42 +148,62 @@ object ByteBufferMessageSet {
         } finally {
           CoreUtils.swallow(compressed.close())
         }
-
+        // 返回读取到的内层消息集合
         innerMessageAndOffsets
       }
 
+      // 从压缩流中读取数据并转换为MessageAndOffset对象
       private def readMessageFromStream(compressed: DataInputStream): MessageAndOffset = {
+        // 读取offset和消息大小
         val innerOffset = compressed.readLong()
         val recordSize = compressed.readInt()
 
+        // 检查边界，消息大小不可小于最小的消息头信息大小
         if (recordSize < MinMessageOverhead)
           throw new InvalidMessageException(s"Message found with corrupt size `$recordSize` in deep iterator")
 
         // read the record into an intermediate record buffer (i.e. extra copy needed)
+        // 大小为recordSize字节数组，用于存放消息数据
         val bufferArray = new Array[Byte](recordSize)
+        // 使用压缩流读取消息数据到bufferArray中
         compressed.readFully(bufferArray, 0, recordSize)
+        // 使用bufferArray创建一个ByteBuffer
         val buffer = ByteBuffer.wrap(bufferArray)
 
         // Override the timestamp if necessary
+        // 根据buffer创建消息，如果有需要会更新时间戳
         val newMessage = new Message(buffer, wrapperMessageTimestampOpt, wrapperMessageTimestampTypeOpt)
 
         // Inner message and wrapper message must have same magic value
+        // 判断得到的消息的魔数是否与外层消息一致，如果不一致抛出IllegalStateException异常
         if (newMessage.magic != wrapperMessage.magic)
           throw new IllegalStateException(s"Compressed message has magic value ${wrapperMessage.magic} " +
             s"but inner message has magic value ${newMessage.magic}")
+        // 更新lastInnerOffset
         lastInnerOffset = innerOffset
+        // 返回以消息对象和offset构成的MessageAndOffset对象
         new MessageAndOffset(newMessage, innerOffset)
       }
 
+      // 获取迭代器中下一个元素
       override def makeNext(): MessageAndOffset = {
+        /**
+          * messageAndOffsets的类型是new ArrayDeque[MessageAndOffset]()
+          * poll出第一个
+          */
         messageAndOffsets.pollFirst() match {
+          // 为空，说明迭代完了
           case null => allDone()
+          // 迭代到的元素是MessageAndOffset对象
           case nextMessage@ MessageAndOffset(message, offset) =>
+            // 根据魔数版本处理offset
             if (wrapperMessage.magic > MagicValue_V0) {
+              // 当魔数版本为MagicValue_V1时，压缩消息是倒序存储的
               val relativeOffset = offset - lastInnerOffset
               val absoluteOffset = wrapperMessageOffset + relativeOffset
               new MessageAndOffset(message, absoluteOffset)
             } else {
+              // 当魔数版本为MagicValue_V0时直接返回，不做处理
               nextMessage
             }
         }
@@ -349,49 +383,73 @@ class ByteBufferMessageSet(val buffer: ByteBuffer) extends MessageSet with Loggi
     true
   }
 
-  /** default iterator that iterates over decompressed messages */
+  /**
+    * default iterator that iterates over decompressed messages
+    * 默认的迭代器是深层迭代器
+    * */
   override def iterator: Iterator[MessageAndOffset] = internalIterator()
 
-  /** iterator over compressed messages without decompressing */
+  /**
+    * iterator over compressed messages without decompressing
+    * 浅层迭代器
+    * */
   def shallowIterator: Iterator[MessageAndOffset] = internalIterator(true)
 
-  /** When flag isShallow is set to be true, we do a shallow iteration: just traverse the first level of messages. **/
+  /**
+    * When flag isShallow is set to be true, we do a shallow iteration: just traverse the first level of messages.
+    * isShallow为true时做浅层迭代，仅仅迭代第一层消息
+    */
   private def internalIterator(isShallow: Boolean = false): Iterator[MessageAndOffset] = {
     new IteratorTemplate[MessageAndOffset] {
+      // 顶层迭代器的缓冲区副本
       var topIter = buffer.slice()
+      // 深层迭代器
       var innerIter: Iterator[MessageAndOffset] = null
 
+      // 深层迭代是否完成，当深层迭代器为null或其中没有下一个元素时说明完成了
       def innerDone(): Boolean = (innerIter == null || !innerIter.hasNext)
 
+      // 浅层迭代
       def makeNextOuter: MessageAndOffset = {
         // if there isn't at least an offset and size, we are done
-        if (topIter.remaining < 12)
+        if (topIter.remaining < 12) // 判断剩余字节数，最少是包含了offset（Long类型，8字节）和size（Int类型，4字节）字段的大小
           return allDone()
+        // 获取偏移量
         val offset = topIter.getLong()
+        // 获取大小
         val size = topIter.getInt()
+        // 判断大小是否合法
         if(size < Message.MinMessageOverhead)
           throw new InvalidMessageException("Message found with corrupt size (" + size + ") in shallow iterator")
 
         // we have an incomplete message
+        // 判断剩余字节数是否小于size，如果小于说明剩余字节不能凑成一条消息
         if(topIter.remaining < size)
           return allDone()
 
         // read the current message and check correctness
+        // 获取缓冲区副本
         val message = topIter.slice()
+        // 设置limit，此时message的position ~ limit之间就是当前这条消息的数据
         message.limit(size)
+        // 原缓冲区移到下一个消息的起始偏移量
         topIter.position(topIter.position + size)
+        // 读取当前消息的数据
         val newMessage = new Message(message)
         if(isShallow) {
-          // 浅层迭代
+          // 浅层迭代，直接返回消息数据
           new MessageAndOffset(newMessage, offset)
         } else {
-          // 深层迭代
+          // 深层迭代，需要根据压缩器类型进行匹配操作
           newMessage.compressionCodec match {
             case NoCompressionCodec =>
+              // 无压缩器，直接返回消息
               innerIter = null
               new MessageAndOffset(newMessage, offset)
             case _ =>
+              // 有压缩器，创建深层迭代器
               innerIter = ByteBufferMessageSet.deepIterator(new MessageAndOffset(newMessage, offset))
+              // 使用深层迭代器进行迭代，迭代过程交给了makeNext()方法
               if(!innerIter.hasNext)
                 innerIter = null
               makeNext()
@@ -401,11 +459,15 @@ class ByteBufferMessageSet(val buffer: ByteBuffer) extends MessageSet with Loggi
 
       override def makeNext(): MessageAndOffset = {
         if(isShallow){
+          // 如果是浅层迭代，返回浅层迭代的下一个元素
           makeNextOuter
         } else {
+          // 如果是深层迭代则需要根据情况判断
           if(innerDone())
+            // 深层迭代已完成，返回浅层迭代的下一个元素
             makeNextOuter
           else
+            // 深层迭代未完成，返回深层迭代的下一个元素
             innerIter.next()
         }
       }

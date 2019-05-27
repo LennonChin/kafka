@@ -173,7 +173,7 @@ class LogSegment(val log: FileMessageSet,
         // true high watermark in the previous leader for a short window. In this window, if a consumer fetches on an
         // offset between new leader's high watermark and the log end offset, we want to return an empty response.
         if(offset < startOffset)
-          // maxOffset小雨startOffset，返回一个大小为0的FetchDataInfo对象
+          // maxOffset小于startOffset，返回一个大小为0的FetchDataInfo对象
           return FetchDataInfo(offsetMetadata, MessageSet.Empty)
         // 将maxOffset转换为物理偏移量
         val mapping = translateOffset(offset, startPosition.position)

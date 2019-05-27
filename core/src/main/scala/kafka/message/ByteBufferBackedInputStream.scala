@@ -23,6 +23,7 @@ import java.nio.ByteBuffer
 class ByteBufferBackedInputStream(buffer:ByteBuffer) extends InputStream {
   override def read():Int  = {
     buffer.hasRemaining match {
+        // 每次读取一个字节
       case true =>
         (buffer.get() & 0xFF)
       case false => -1

@@ -25,7 +25,14 @@ import java.io.InputStream
 import org.apache.kafka.common.record.{KafkaLZ4BlockInputStream, KafkaLZ4BlockOutputStream}
 
 object CompressionFactory {
-  
+
+  /**
+    * 根据压缩器、消息版本（魔数版本）、输出流创建经过压缩器包装后的输出流，进行压缩
+    * @param compressionCodec 压缩器
+    * @param messageVersion 消息版本
+    * @param stream 输出流
+    * @return
+    */
   def apply(compressionCodec: CompressionCodec, messageVersion: Byte, stream: OutputStream): OutputStream = {
     compressionCodec match {
       case DefaultCompressionCodec => new GZIPOutputStream(stream)
@@ -39,7 +46,14 @@ object CompressionFactory {
         throw new kafka.common.UnknownCodecException("Unknown Codec: " + compressionCodec)
     }
   }
-  
+
+  /**
+    * 根据压缩器、消息版本（魔数版本）、输入流创建经过压缩器包装后的输入流，进行解压
+    * @param compressionCodec 压缩器
+    * @param messageVersion 消息版本
+    * @param stream 输入流
+    * @return
+    */
   def apply(compressionCodec: CompressionCodec, messageVersion: Byte, stream: InputStream): InputStream = {
     compressionCodec match {
       case DefaultCompressionCodec => new GZIPInputStream(stream)

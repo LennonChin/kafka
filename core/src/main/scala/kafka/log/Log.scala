@@ -884,7 +884,7 @@ class Log(val dir: File,
       return
     debug("Flushing log '" + name + " up to offset " + offset + ", last flushed: " + lastFlushTime + " current time: " +
           time.milliseconds + " unflushed = " + unflushedMessages)
-    // 将所有LogSegment的 revocerPoint ~ LEO 之间的消息刷新到磁盘上
+    // 将所有LogSegment的 revoceryPoint ~ LEO 之间的消息刷新到磁盘上
     for(segment <- logSegments(this.recoveryPoint, offset))
       segment.flush()
     lock synchronized {
@@ -1136,6 +1136,8 @@ object Log {
   /**
    * Make log segment file name from offset bytes. All this does is pad out the offset number with zeros
    * so that ls sorts the files numerically.
+    * 该方法用于生成日志文件或索引文件的文件名
+    * 文件名一共20位，offset值占据低位，高位不足的补0
    * @param offset The offset to use in the file name
    * @return The filename
    */
@@ -1149,6 +1151,7 @@ object Log {
 
   /**
    * Construct a log file name in the given dir with the given base offset
+    * 根据offset（一般是logEndOffset）来创建日志文件
    * @param dir The directory in which the log will reside
    * @param offset The base offset of the log file
    */
@@ -1157,6 +1160,7 @@ object Log {
 
   /**
    * Construct an index file name in the given dir using the given base offset
+    * 根据offset（一般是logEndOffset）来创建索引文件
    * @param dir The directory in which the log will reside
    * @param offset The base offset of the log file
    */
