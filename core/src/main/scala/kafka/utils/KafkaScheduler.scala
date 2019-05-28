@@ -80,7 +80,7 @@ class KafkaScheduler(val threads: Int,
       // 构造器内初始化定时任务线程池
       // 配置线程数
       executor = new ScheduledThreadPoolExecutor(threads)
-      // 配置在线程池关闭后继续执行已存在的周期任务
+      // 配置在线程池关闭后放弃执行已存在的周期任务
       executor.setContinueExistingPeriodicTasksAfterShutdownPolicy(false)
       // 配置在线程池关闭后放弃执行已存在的定时任务
       executor.setExecuteExistingDelayedTasksAfterShutdownPolicy(false)

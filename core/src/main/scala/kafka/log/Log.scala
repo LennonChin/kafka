@@ -615,7 +615,7 @@ class Log(val dir: File,
     // We create the local variables to avoid race conditions with updates to the log.
     /**
       * read操作不会加锁，因此将nextOffsetMetadata拷贝一份为局部变量避免线程竞争更新了nextOffsetMetadata
-      * nextOffsetMetadata每次在updateLogEndOffset()方法的代码中更新updateLogEndOffset的时候，都是创建新的LogOffsetMetadata对象，
+      * nextOffsetMetadata每次在updateLogEndOffset()方法的代码中更新的时候，都是创建新的LogOffsetMetadata对象，
       * 而且LogOffsetMetadata中也没有提供任何修改属性的方法，可见LogOffsetMetadata对象是个不可变对象
       */
     val currentNextOffsetMetadata = nextOffsetMetadata

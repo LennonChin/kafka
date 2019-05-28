@@ -328,16 +328,19 @@ class LogSegment(val log: FileMessageSet,
 
   /**
    * Change the suffix for the index and log file for this log segment
+    * 改变LogSegment描述的日志文件和索引文件的后缀
    */
   def changeFileSuffixes(oldSuffix: String, newSuffix: String) {
 
     def kafkaStorageException(fileType: String, e: IOException) =
       new KafkaStorageException(s"Failed to change the $fileType file suffix from $oldSuffix to $newSuffix for log segment $baseOffset", e)
 
+    // 将日志文件的后缀名由oldSuffix改为newSuffix
     try log.renameTo(new File(CoreUtils.replaceSuffix(log.file.getPath, oldSuffix, newSuffix)))
     catch {
       case e: IOException => throw kafkaStorageException("log", e)
     }
+    // 将索引文件的后缀名由oldSuffix改为newSuffix
     try index.renameTo(new File(CoreUtils.replaceSuffix(index.file.getPath, oldSuffix, newSuffix)))
     catch {
       case e: IOException => throw kafkaStorageException("index", e)
@@ -359,7 +362,7 @@ class LogSegment(val log: FileMessageSet,
   def delete() {
     // 删除Log日志文件
     val deletedLog = log.delete()
-    // 杀出Index索引文件
+    // 删除Index索引文件
     val deletedIndex = index.delete()
     // 检查是否删除成功
     if(!deletedLog && log.file.exists)

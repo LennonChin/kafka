@@ -39,14 +39,14 @@ import java.util.concurrent.{ExecutionException, ExecutorService, Executors, Fut
   *
   * @param logDirs log目录集合，在server.properties配置文件中指定的
   * @param topicConfigs 主题配置
-  * @param defaultConfig
-  * @param cleanerConfig
+  * @param defaultConfig 默认配置
+  * @param cleanerConfig 日志压缩的配置
   * @param ioThreads 为完成Log加载的相关操作，每个log目录下分配指定的线程执行加载
   * @param flushCheckMs kafka-log-flusher定时任务的周期时间
   * @param flushCheckpointMs kafka-recovery-point-checkpoint定时任务的周期时间
   * @param retentionCheckMs kafka-log-retention定时任务的周期时间
   * @param scheduler KafkaScheduler对象，用于执行周期任务的线程池
-  * @param brokerState
+  * @param brokerState Broker状态
   * @param time
  */
 @threadsafe
@@ -63,6 +63,7 @@ class LogManager(val logDirs: Array[File],
                  private val time: Time) extends Logging {
   val RecoveryPointCheckpointFile = "recovery-point-offset-checkpoint"
   val LockFile = ".lock"
+  // 定时任务的延迟时间
   val InitialTaskDelayMs = 30*1000
   // 创建或删除Log时需要加锁进行同步
   private val logCreationOrDeletionLock = new Object
@@ -81,6 +82,7 @@ class LogManager(val logDirs: Array[File],
     * RecoveryPointCheckpoint文件中则记录了该log目录下的所有Log的recoveryPoint
     */
   private val recoveryPointCheckpoints = logDirs.map(dir => (dir, new OffsetCheckpoint(new File(dir, RecoveryPointCheckpointFile)))).toMap
+  // 加载Log
   loadLogs()
 
   // public, so we can access this from kafka.admin.DeleteTopicTest
@@ -136,7 +138,7 @@ class LogManager(val logDirs: Array[File],
       val lock = new FileLock(new File(dir, LockFile))
       // 对该FileLock尝试进行加锁
       if(!lock.tryLock())
-        throw new KafkaException("Failed to acquire lock on file .lock in " + lock.file.getParentFile.getAbsolutePath + 
+        throw new KafkaException("Failed to acquire lock on file .lock in " + lock.file.getParentFile.getAbsolutePath +
                                ". A Kafka instance in another process or thread is using this directory.")
       // 返回FileLock
       lock
@@ -249,23 +251,23 @@ class LogManager(val logDirs: Array[File],
     if(scheduler != null) {
       // 启动kafka-log-retention定时任务
       info("Starting log cleanup with a period of %d ms.".format(retentionCheckMs))
-      scheduler.schedule("kafka-log-retention", 
-                         cleanupLogs, 
-                         delay = InitialTaskDelayMs, 
-                         period = retentionCheckMs, 
+      scheduler.schedule("kafka-log-retention",
+                         cleanupLogs,
+                         delay = InitialTaskDelayMs,
+                         period = retentionCheckMs, // log.retention.check.interval.ms
                          TimeUnit.MILLISECONDS)
       info("Starting log flusher with a default period of %d ms.".format(flushCheckMs))
       // 启动kafka-log-flusher定时任务
-      scheduler.schedule("kafka-log-flusher", 
-                         flushDirtyLogs, 
-                         delay = InitialTaskDelayMs, 
-                         period = flushCheckMs, 
+      scheduler.schedule("kafka-log-flusher",
+                         flushDirtyLogs,
+                         delay = InitialTaskDelayMs,
+                         period = flushCheckMs, // log.flush.scheduler.interval.ms
                          TimeUnit.MILLISECONDS)
       // 启动kafka-recovery-point-checkpoint定时任务
       scheduler.schedule("kafka-recovery-point-checkpoint",
                          checkpointRecoveryPointOffsets,
                          delay = InitialTaskDelayMs,
-                         period = flushCheckpointMs,
+                         period = flushCheckpointMs, // log.flush.offset.checkpoint.interval.ms
                          TimeUnit.MILLISECONDS)
     }
     if(cleanerConfig.enableCleaner) // log.cleaner.enable
@@ -380,7 +382,7 @@ class LogManager(val logDirs: Array[File],
   }
 
   /**
-   * Write out the current recovery point for all logs to a text file in the log directory 
+   * Write out the current recovery point for all logs to a text file in the log directory
    * to avoid recovering the whole log on startup.
    */
   def checkpointRecoveryPointOffsets() {
@@ -396,7 +398,7 @@ class LogManager(val logDirs: Array[File],
     val recoveryPoints = this.logsByDir.get(dir.toString)
     if (recoveryPoints.isDefined) { // recoveryPoints不为空
       // 更新指定log目录下RecoveryPointCheckpoint文件
-      this.recoveryPointCheckpoints(dir) // OffsetCheckpoint对象
+      this.recoveryPointCheckpoints(dir) // OffsetCheckpoint对象，其中保存了dir目录下的RecoveryPointCheckpoint文件
         .write(recoveryPoints.get.mapValues(_.recoveryPoint))
     }
   }
@@ -583,6 +585,11 @@ class LogManager(val logDirs: Array[File],
    * Map of log dir to logs by topic and partitions in that dir
    */
   private def logsByDir = {
+    /**
+      * 对Map[TopicAndPartition, Log]进行目录分组聚合
+      * 最终得到Map[String, Map[TopicAndPartition, Log]]结构的字典数据
+      * 其中键为TopicAndPartition的父目录
+      */
     this.logsByTopicPartition.groupBy {
       case (_, log) => log.dir.getParent
     }
