@@ -26,21 +26,26 @@ abstract class ShutdownableThread(val name: String, val isInterruptible: Boolean
   this.logIdent = "[" + name + "], "
   // 运行状态
   val isRunning: AtomicBoolean = new AtomicBoolean(true)
+  // 用于控制线程关闭的锁
   private val shutdownLatch = new CountDownLatch(1)
 
+  // 关闭线程
   def shutdown() = {
     initiateShutdown()
     awaitShutdown()
   }
 
   def initiateShutdown(): Boolean = {
-    if(isRunning.compareAndSet(true, false)) {
+    if(isRunning.compareAndSet(true, false)) { // CAS方式修改isRunning为false
       info("Shutting down")
+      // 修改isRunning为false
       isRunning.set(false)
+      // 处理中断
       if (isInterruptible)
         interrupt()
       true
     } else
+      // 修改isRunning失败
       false
   }
 

@@ -46,6 +46,7 @@ private[log] class LogCleanerManager(val logDirs: Array[File], val logs: Pool[To
   override val loggerName = classOf[LogCleaner].getName
 
   // package-private for testing
+  // Cleaner Checkpoint文件名
   private[log] val offsetCheckpointFile = "cleaner-offset-checkpoint"
   
   /**

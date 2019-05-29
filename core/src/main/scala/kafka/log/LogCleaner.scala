@@ -58,10 +58,10 @@ import scala.collection._
  * basis and is measured from the time the segment enters the clean portion of the log (at which point any prior message with that key has been removed).
  * Delete markers in the clean section of the log that are older than this time will not be retained when log segments are being recopied as part of cleaning.
  * 
- * @param config Configuration parameters for the cleaner
- * @param logDirs The directories where offset checkpoints reside
- * @param logs The pool of logs
- * @param time A way to control the passage of time
+ * @param config Configuration parameters for the cleaner Cleaner的配置
+ * @param logDirs The directories where offset checkpoints reside 数据目录集合
+ * @param logs The pool of logs 主题分区到Log对象的映射字典
+ * @param time A way to control the passage of time 当前时间
  */
 class LogCleaner(val config: CleanerConfig,
                  val logDirs: Array[File],
@@ -202,7 +202,7 @@ class LogCleaner(val config: CleanerConfig,
 
     // 初始化压缩器
     val cleaner = new Cleaner(id = threadId,
-                              offsetMap = new SkimpyOffsetMap(memory = math.min(config.dedupeBufferSize / config.numThreads, Int.MaxValue).toInt, 
+                              offsetMap = new SkimpyOffsetMap(memory = math.min(config.dedupeBufferSize / config.numThreads, Int.MaxValue).toInt,
                                                               hashAlgorithm = config.hashAlgorithm),
                               ioBufferSize = config.ioBufferSize / config.numThreads / 2,
                               maxIoBufferSize = config.maxMessageSize,
@@ -212,6 +212,8 @@ class LogCleaner(val config: CleanerConfig,
                               checkDone = checkDone)
     
     @volatile var lastStats: CleanerStats = new CleanerStats()
+
+    // 退避锁，用于在必要的时候等待一段时间
     private val backOffWaitLatch = new CountDownLatch(1)
 
     private def checkDone(topicAndPartition: TopicAndPartition) {
@@ -324,10 +326,16 @@ private[log] class Cleaner(val id: Int,
   val statsUnderlying = (new CleanerStats(time), new CleanerStats(time))
   def stats = statsUnderlying._1
 
-  /* buffer used for read i/o */
+  /**
+    *  buffer used for read i/o
+    *  读缓冲区
+    **/
   private var readBuffer = ByteBuffer.allocate(ioBufferSize)
-  
-  /* buffer used for write i/o */
+
+  /**
+    *  buffer used for write i/o
+    *  写缓冲区
+    **/
   private var writeBuffer = ByteBuffer.allocate(ioBufferSize)
 
   /**
@@ -349,27 +357,28 @@ private[log] class Cleaner(val id: Int,
     // activeSegment不参与压缩，所以activeSegment的baseOffset是可以压缩的最大上限
     val upperBoundOffset = log.activeSegment.baseOffset
 
-    // 填充OffsetMap，确定日志压缩的真正上限
+    // 第1步：填充OffsetMap，确定日志压缩的真正上限
     val endOffset = buildOffsetMap(log, cleanable.firstDirtyOffset, upperBoundOffset, offsetMap) + 1
 
     // 维护状态
     stats.indexDone()
-    
+
     // figure out the timestamp below which it is safe to remove delete tombstones
     // this position is defined to be a configurable time beneath the last modified time of the last clean segment
-    // 计算可以安全删除"删除标识"（即value为空的消息）的LogSegment
-    val deleteHorizonMs = 
+    // 第2步：计算可以安全删除"删除标识"（即value为空的消息）的LogSegment
+    val deleteHorizonMs =
       log.logSegments(0, cleanable.firstDirtyOffset).lastOption match {
         case None => 0L
         case Some(seg) => seg.lastModified - log.config.deleteRetentionMs
     }
-        
+
     // group the segments and clean the groups
     info("Cleaning log %s (discarding tombstones prior to %s)...".format(log.name, new Date(deleteHorizonMs)))
-    // 对要压缩的LogSegment进行分组，按照分组进行压缩
+    // 第3步：对要压缩的LogSegment进行分组，按照分组进行压缩
     for (group <- groupSegmentsBySize(log.logSegments(0, endOffset), log.config.segmentSize, log.config.maxIndexSize))
+      // 第4步：开始进行压缩
       cleanSegments(log, group, offsetMap, deleteHorizonMs)
-      
+
     // record buffer utilization
     // 记录buffer使用率
     stats.bufferUtilization = offsetMap.utilization
@@ -642,7 +651,7 @@ private[log] class Cleaner(val id: Int,
    * We collect a group of such segments together into a single
    * destination segment. This prevents segment sizes from shrinking too much.
     *
-    * 对LogSegment进行分组，将相同的LogSegment分到一组
+    * 对LogSegment进行分组，将相同主题分区的LogSegment分到一组
    *
    * @param segments The log segments to group 需要分组的LogSegment集合
    * @param maxSize the maximum size in bytes for the total of all log data in a group 一个分组最大的字节数
@@ -703,7 +712,7 @@ private[log] class Cleaner(val id: Int,
     // 查找从[start, end)之间所有的LogSegment
     val dirty = log.logSegments(start, end).toBuffer
     info("Building offset map for log %s for %d segments in offset range [%d, %d).".format(log.name, dirty.size, start, end))
-    
+
     // Add all the dirty segments. We must take at least map.slots * load_factor,
     // but we may be able to fit more (if there is lots of duplication in the dirty section of the log)
     // 起始LogSegment的baseOffset

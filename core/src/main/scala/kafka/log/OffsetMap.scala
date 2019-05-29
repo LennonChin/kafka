@@ -79,22 +79,29 @@ class SkimpyOffsetMap(val memory: Int, val hashAlgorithm: String = "MD5") extend
   override def put(key: ByteBuffer, offset: Long) {
     require(entries < slots, "Attempt to add a new entry to a full offset map.")
     lookups += 1
+    // 对key进行hash操作（MD5加密，16位字节），hash后的数据会放在hash1中
     hashInto(key, hash1)
     // probe until we find the first empty slot
+    // 探测直到找到空位
     var attempt = 0
-    var pos = positionOf(hash1, attempt)  
+    var pos = positionOf(hash1, attempt)
     while(!isEmpty(pos)) {
+      // 获取该位置的hash值
       bytes.position(pos)
       bytes.get(hash2)
+      // 比较两个hash值
       if(Arrays.equals(hash1, hash2)) {
+        // 对比两个hash如果相同说明之前有key和offset已经保存过了，直接覆盖重写offset
         // we found an existing entry, overwrite it and return (size does not change)
         bytes.putLong(offset)
         return
       }
       attempt += 1
+      // 继续查找
       pos = positionOf(hash1, attempt)
     }
     // found an empty slot, update it--size grows by 1
+    // 没有找到，直接添加新的offset，存储的方式是hash与offset连续存储
     bytes.position(pos)
     bytes.put(hash1)
     bytes.putLong(offset)

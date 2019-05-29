@@ -97,7 +97,7 @@ class LogManager(val logDirs: Array[File],
    * <ol>
    * <li> Ensure that there are no duplicates in the directory list
    * <li> Create each directory if it doesn't exist
-   * <li> Check that each path is a readable directory 
+   * <li> Check that each path is a readable directory
    * </ol>
    */
   private def createAndValidateLogDirs(dirs: Seq[File]) {
@@ -202,7 +202,7 @@ class LogManager(val logDirs: Array[File],
           debug("Loading log '" + logDir.getName + "'")
           // 从目录名解析出Topic名称和分区编号
           val topicPartition = Log.parseTopicPartitionName(logDir)
-          // 获取Log对应的配置
+          // 获取Log对应的配置，也即是主题分区对应的配置
           val config = topicConfigs.getOrElse(topicPartition.topic, defaultConfig)
           // 获取Log对应的recoveryPoint
           val logRecoveryPoint = recoveryPoints.getOrElse(topicPartition, 0L)
