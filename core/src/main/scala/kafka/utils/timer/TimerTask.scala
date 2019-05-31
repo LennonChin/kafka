@@ -24,7 +24,9 @@ trait TimerTask extends Runnable {
 
   def cancel(): Unit = {
     synchronized {
+      // 将当前任务的timerTaskEntry从TimerTaskList中移除
       if (timerTaskEntry != null) timerTaskEntry.remove()
+      // 将任务置为null
       timerTaskEntry = null
     }
   }

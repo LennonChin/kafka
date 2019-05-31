@@ -92,11 +92,16 @@ private[timer] class TimerTaskList(taskCounter: AtomicInteger) extends Delayed {
     synchronized {
       timerTaskEntry.synchronized {
         if (timerTaskEntry.list eq this) {
+          // 后继节点的前驱改为自己的前驱
           timerTaskEntry.next.prev = timerTaskEntry.prev
+          // 前驱节点的后继改为自己的后继
           timerTaskEntry.prev.next = timerTaskEntry.next
+          // 将自己的后继和前驱都设为null
           timerTaskEntry.next = null
           timerTaskEntry.prev = null
+          // 将自己引用的当前链表设为null
           timerTaskEntry.list = null
+          // 维护链表的任务个数
           taskCounter.decrementAndGet()
         }
       }
@@ -106,12 +111,18 @@ private[timer] class TimerTaskList(taskCounter: AtomicInteger) extends Delayed {
   // Remove all task entries and apply the supplied function to each of them
   def flush(f: (TimerTaskEntry)=>Unit): Unit = {
     synchronized {
+      // 头节点
       var head = root.next
+      // 从头向尾遍历链表
       while (head ne root) {
+        // 先从链表中移除
         remove(head)
+        // 调用传入的方法参数进行处理
         f(head)
+        // 移向下一个元素
         head = root.next
       }
+      // 重置过期时间
       expiration.set(-1L)
     }
   }
