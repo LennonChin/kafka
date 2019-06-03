@@ -125,9 +125,10 @@ class ReplicaManager(val config: KafkaConfig,
   private val isrChangeSet: mutable.Set[TopicAndPartition] = new mutable.HashSet[TopicAndPartition]()
   private val lastIsrChangeMs = new AtomicLong(System.currentTimeMillis())
   private val lastIsrPropagationMs = new AtomicLong(System.currentTimeMillis())
-
+  // 生产请求的DelayedOperationPurgatory
   val delayedProducePurgatory = DelayedOperationPurgatory[DelayedProduce](
     purgatoryName = "Produce", config.brokerId, config.producerPurgatoryPurgeIntervalRequests)
+  // 拉取请求的DelayedOperationPurgatory
   val delayedFetchPurgatory = DelayedOperationPurgatory[DelayedFetch](
     purgatoryName = "Fetch", config.brokerId, config.fetchPurgatoryPurgeIntervalRequests)
 
@@ -328,27 +329,31 @@ class ReplicaManager(val config: KafkaConfig,
 
     if (isValidRequiredAcks(requiredAcks)) {
       val sTime = SystemTime.milliseconds
+      // 将消息追加到Log中，同时还会检测delayedFetchPurgatory中相关key对应的DelayedFetch，满足条件则将其执行完成
       val localProduceResults = appendToLocalLog(internalTopicsAllowed, messagesPerPartition, requiredAcks)
       debug("Produce to local log in %d ms".format(SystemTime.milliseconds - sTime))
-
+      // 对追加结果进行转换，注意ProducePartitionStatus的参数
       val produceStatus = localProduceResults.map { case (topicPartition, result) =>
         topicPartition ->
                 ProducePartitionStatus(
                   result.info.lastOffset + 1, // required offset
                   new PartitionResponse(result.errorCode, result.info.firstOffset, result.info.timestamp)) // response status
       }
-
+      // 检测是否生成DelayedProduce，其中一个条件是检测ProduceRequest中的acks字段是否为-1
       if (delayedRequestRequired(requiredAcks, messagesPerPartition, localProduceResults)) {
         // create delayed produce operation
         val produceMetadata = ProduceMetadata(requiredAcks, produceStatus)
+        // 创建DelayedProduce对象
         val delayedProduce = new DelayedProduce(timeout, produceMetadata, this, responseCallback)
 
         // create a list of (topic, partition) pairs to use as keys for this delayed produce operation
+        // 将ProduceRequest中的主题映射为TopicPartitionOperationKey
         val producerRequestKeys = messagesPerPartition.keys.map(new TopicPartitionOperationKey(_)).toSeq
 
         // try to complete the request immediately, otherwise put it into the purgatory
         // this is because while the delayed produce operation is being created, new
         // requests may arrive and hence make this operation completable.
+        // 尝试完成DelayedProduce，否则将DelayedProduce添加到delayedProducePurgatory中管理
         delayedProducePurgatory.tryCompleteElseWatch(delayedProduce, producerRequestKeys)
 
       } else {
@@ -460,20 +465,32 @@ class ReplicaManager(val config: KafkaConfig,
                     fetchMinBytes: Int,
                     fetchInfo: immutable.Map[TopicAndPartition, PartitionFetchInfo],
                     responseCallback: Map[TopicAndPartition, FetchResponsePartitionData] => Unit) {
+    // 只有Follower副本才有replicaId，消费者是没有的，消费者的replicaId始终是-1
     val isFromFollower = replicaId >= 0
     val fetchOnlyFromLeader: Boolean = replicaId != Request.DebuggingConsumerId
     val fetchOnlyCommitted: Boolean = ! Request.isValidBrokerId(replicaId)
 
     // read from local logs
+    // 从Log中读取消息
     val logReadResults = readFromLocalLog(fetchOnlyFromLeader, fetchOnlyCommitted, fetchInfo)
 
     // if the fetch comes from the follower,
     // update its corresponding log end offset
+    // 检测FetchRequest是否来自Follower副本
     if(Request.isValidBrokerId(replicaId))
+      /**
+        * updateFollowerLogReadResults()方法用来处理来自Follower副本的FetchRequest请求，主要做下面4件事：
+        * 1. 在Leader中维护了Follower副本的各种状态，这里会更新对应Follower副本的状态，例如，更新LEO、更新lastCaughtUpTimeMsUnderlying等
+        * 2. 检测是否需要对ISR集合进行扩张，如果ISR集合发生变化，则将新的ISR集合的记录保存到ZooKeeper中
+        * 3. 检测是否后移Leader的HW
+        * 4. 检测delayedProducePurgatory中相关key对应的DelayedProduce，满足条件则将其执行完成
+        */
       updateFollowerLogReadResults(replicaId, logReadResults)
 
     // check if this fetch request can be satisfied right away
+    // 统计从Log中读取的字节总数
     val bytesReadable = logReadResults.values.map(_.info.messageSet.sizeInBytes).sum
+    // 统计在从Log中读取消息的时候，是否发生了异常
     val errorReadingData = logReadResults.values.foldLeft(false) ((errorIncurred, readResult) =>
       errorIncurred || (readResult.errorCode != Errors.NONE.code))
 
@@ -481,24 +498,36 @@ class ReplicaManager(val config: KafkaConfig,
     //                        2) fetch request does not require any data
     //                        3) has enough data to respond
     //                        4) some error happens while reading data
+    /**
+      * 判断是否能够立即返回FetchResponse，下面四个条件满足任意一个就可以立即返回FetchResponse：
+      * 1. FetchRequest的timeout＜=0，即消费者或Follower副本不希望等待
+      * 2. FetchRequest没有指定要读取的分区，即fetchInfo.size ＜= 0
+      * 3. 已经读取了足够的数据，即bytesReadable ＞= fetchMinBytes
+      * 4. 在读取数据的过程中发生了异常，即检查errorReadingData
+      */
     if(timeout <= 0 || fetchInfo.size <= 0 || bytesReadable >= fetchMinBytes || errorReadingData) {
       val fetchPartitionData = logReadResults.mapValues(result =>
         FetchResponsePartitionData(result.errorCode, result.hw, result.info.messageSet))
+      // 直接调用回调函数，生成并发送FetchResponse
       responseCallback(fetchPartitionData)
     } else {
       // construct the fetch results from the read results
+      // 对读取Log的结果进行转换
       val fetchPartitionStatus = logReadResults.map { case (topicAndPartition, result) =>
         (topicAndPartition, FetchPartitionStatus(result.info.fetchOffsetMetadata, fetchInfo.get(topicAndPartition).get))
       }
       val fetchMetadata = FetchMetadata(fetchMinBytes, fetchOnlyFromLeader, fetchOnlyCommitted, isFromFollower, fetchPartitionStatus)
+      // 创建DelayedFetch对象
       val delayedFetch = new DelayedFetch(timeout, fetchMetadata, this, responseCallback)
 
       // create a list of (topic, partition) pairs to use as keys for this delayed fetch operation
+      // 创建delayedFetchKeys
       val delayedFetchKeys = fetchPartitionStatus.keys.map(new TopicPartitionOperationKey(_)).toSeq
 
       // try to complete the request immediately, otherwise put it into the purgatory;
       // this is because while the delayed fetch operation is being created, new requests
       // may arrive and hence make this operation completable.
+      // 完成DelayedFetch，否则将DelayedFetch添加到delayedFetchPurgatory中管理
       delayedFetchPurgatory.tryCompleteElseWatch(delayedFetch, delayedFetchKeys)
     }
   }

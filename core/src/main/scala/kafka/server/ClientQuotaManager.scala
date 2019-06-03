@@ -113,9 +113,11 @@ class ClientQuotaManager(private val config: ClientQuotaManagerConfig,
     try {
       clientSensors.quotaSensor.record(value)
       // trigger the callback immediately if quota is not violated
+      // 调用callback
       callback(0)
     } catch {
       case qve: QuotaViolationException =>
+        // 异常处理
         // Compute the delay
         val clientMetric = metrics.metrics().get(clientRateMetricName(clientId))
         throttleTimeMs = throttleTime(clientMetric, getQuotaMetricConfig(quota(clientId)))

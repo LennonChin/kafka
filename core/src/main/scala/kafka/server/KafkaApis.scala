@@ -335,15 +335,21 @@ class KafkaApis(val requestChannel: RequestChannel,
     }
 
     // the callback for sending a produce response
+    /**
+      * 这个函数会当做回调函数最终传递给DelayedProduce的responseCallback参数
+      * @param responseStatus
+      */
     def sendResponseCallback(responseStatus: Map[TopicPartition, PartitionResponse]) {
-
+      // 生成响应状态集合，其中包括通过授权验证并处理完成的状态（responseStatus），以及未通过授权验证的状态（unauthorizedRequestInfo）
       val mergedResponseStatus = responseStatus ++ unauthorizedRequestInfo.mapValues(_ =>
         new PartitionResponse(Errors.TOPIC_AUTHORIZATION_FAILED.code, -1, Message.NoTimestamp))
 
+      // 标识处理ProducerRequest的过程中是否出现异常
       var errorInResponse = false
-
+      // 遍历响应状态集合
       mergedResponseStatus.foreach { case (topicPartition, status) =>
-        if (status.errorCode != Errors.NONE.code) {
+        if (status.errorCode != Errors.NONE.code) { // 当存在错误状态码时
+          // 将errorInResponse置为true
           errorInResponse = true
           debug("Produce request with correlation id %d from client %s on partition %s failed due to %s".format(
             request.header.correlationId,
@@ -353,7 +359,9 @@ class KafkaApis(val requestChannel: RequestChannel,
         }
       }
 
+      // 定义produceResponseCallback()回调函数
       def produceResponseCallback(delayTimeMs: Int) {
+        // 处理acks字段为0的情况，即生产者不需要服务端返回响应
         if (produceRequest.acks == 0) {
           // no operation needed if producer request.required.acks = 0; however, if there is any error in handling
           // the request, since no response is expected by the producer, the server will close socket server so that
@@ -367,12 +375,22 @@ class KafkaApis(val requestChannel: RequestChannel,
                 s"from client id ${request.header.clientId} with ack=0\n" +
                 s"Topic and partition to exceptions: $exceptionsSummary"
             )
+            /**
+              * 处理ProducerRequest过程中出现异常，
+              * 则向对应的responseQueue中添加RequestChannel.CloseConnectionAction类型的响应，关闭连接
+              */
             requestChannel.closeConnection(request.processor, request)
           } else {
+            /**
+              * 处理ProducerRequest过程中未出现异常，
+              * 则向对应的responseQueue中添加RequestChannel.NoOpAction类型的响应，继续读取客户端的请求
+              */
             requestChannel.noOperation(request.processor, request)
           }
-        } else {
+        } else { // 处理acks字段为1或-1的情况，即生产者需要服务端响应
+          // 创建消息头
           val respHeader = new ResponseHeader(request.header.correlationId)
+          // 创建消息体
           val respBody = request.header.apiVersion match {
             case 0 => new ProduceResponse(mergedResponseStatus.asJava)
             case version@(1 | 2) => new ProduceResponse(mergedResponseStatus.asJava, delayTimeMs, version)
@@ -380,14 +398,15 @@ class KafkaApis(val requestChannel: RequestChannel,
             // updating this part of the code to handle it properly.
             case version => throw new IllegalArgumentException(s"Version `$version` of ProduceRequest is not handled. Code must be updated.")
           }
-
+          // 向对应的responseQueue中添加RequestChannel.SendAction类型的响应，将响应返回给客户端
           requestChannel.sendResponse(new RequestChannel.Response(request, new ResponseSend(request.connectionId, respHeader, respBody)))
         }
       }
 
       // When this callback is triggered, the remote API call has completed
+      // 设置API调用的远程完成时间为当前时间
       request.apiRemoteCompleteTimeMs = SystemTime.milliseconds
-
+      // 记录监控数据，但在其内部会调用produceResponseCallback()回调函数
       quotaManagers(ApiKeys.PRODUCE.id).recordAndMaybeThrottle(
         request.header.clientId,
         numBytesAppended,
@@ -434,8 +453,9 @@ class KafkaApis(val requestChannel: RequestChannel,
     }
 
     // the callback for sending a fetch response
+    // 该Callback函数最后会传递给DelayedFetch对象作为其responseCallback参数
     def sendResponseCallback(responsePartitionData: Map[TopicAndPartition, FetchResponsePartitionData]) {
-
+      // 协议版本转换
       val convertedPartitionData =
         // Need to down-convert message when consumer only takes magic value 0.
         if (fetchRequest.versionId <= 1) {
@@ -459,6 +479,7 @@ class KafkaApis(val requestChannel: RequestChannel,
           }
         } else responsePartitionData
 
+      // 将之前把未认证通过的集合与convertedPartitionData合并
       val mergedPartitionData = convertedPartitionData ++ unauthorizedPartitionData
 
       mergedPartitionData.foreach { case (topicAndPartition, data) =>
@@ -473,7 +494,9 @@ class KafkaApis(val requestChannel: RequestChannel,
       def fetchResponseCallback(delayTimeMs: Int) {
         trace(s"Sending fetch response to client ${fetchRequest.clientId} of " +
           s"${convertedPartitionData.values.map(_.messages.sizeInBytes).sum} bytes")
+        // 生成FetchResponse对象
         val response = FetchResponse(fetchRequest.correlationId, mergedPartitionData, fetchRequest.versionId, delayTimeMs)
+        // 向对应responseQueue中添加一个SendAction的Response，其中封装了上面的FetchResponse对象
         requestChannel.sendResponse(new RequestChannel.Response(request, new FetchResponseSend(request.connectionId, response)))
       }
 
@@ -483,8 +506,10 @@ class KafkaApis(val requestChannel: RequestChannel,
 
       // Do not throttle replication traffic
       if (fetchRequest.isFromFollower) {
+        // 调用fetchResponseCallback()返回FetchResponse
         fetchResponseCallback(0)
       } else {
+        // 底层调用fetchResponseCallback()
         quotaManagers(ApiKeys.FETCH.id).recordAndMaybeThrottle(fetchRequest.clientId,
                                                                FetchResponse.responseSize(mergedPartitionData.groupBy(_._1.topic),
                                                                                           fetchRequest.versionId),
