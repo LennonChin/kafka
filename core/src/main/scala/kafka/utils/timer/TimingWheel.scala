@@ -205,7 +205,6 @@ private[timer] class TimingWheel(tickMs: Long, wheelSize: Int, startMs: Long, ta
   // Try to advance the clock
   // 尝试推进当前时间轮的currentTime指针
   def advanceClock(timeMs: Long): Unit = {
-    //
     if (timeMs >= currentTime + tickMs) {
       // 推进当前时间轮的指针
       currentTime = timeMs - (timeMs % tickMs)

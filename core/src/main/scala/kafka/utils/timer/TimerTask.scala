@@ -16,17 +16,21 @@
  */
 package kafka.utils.timer
 
+// TimerTask特质
 trait TimerTask extends Runnable {
 
+  // 延迟时间
   val delayMs: Long // timestamp in millisecond
 
+  // 包装TimerTask的TimerTaskEntry
   private[this] var timerTaskEntry: TimerTaskEntry = null
 
+  // 取消TimerTask
   def cancel(): Unit = {
     synchronized {
       // 将当前任务的timerTaskEntry从TimerTaskList中移除
       if (timerTaskEntry != null) timerTaskEntry.remove()
-      // 将任务置为null
+      // 将所在的TimerTaskEntry置为null
       timerTaskEntry = null
     }
   }
@@ -35,13 +39,16 @@ trait TimerTask extends Runnable {
     synchronized {
       // if this timerTask is already held by an existing timer task entry,
       // we will remove such an entry first.
+      // 先将旧的TimerTaskEntry从TimerTaskList链移除
       if (timerTaskEntry != null && timerTaskEntry != entry)
         timerTaskEntry.remove()
 
+      // 然后进行设置
       timerTaskEntry = entry
     }
   }
 
+  // 获取当前TimerTask的TimerTaskEntry
   private[timer] def getTimerTaskEntry(): TimerTaskEntry = {
     timerTaskEntry
   }
