@@ -120,9 +120,17 @@ abstract class DelayedOperation(override val delayMs: Long) extends TimerTask wi
 
 object DelayedOperationPurgatory {
 
+  /**
+    * @param purgatoryName 炼狱名称
+    * @param brokerId broker的ID
+    * @param purgeInterval 清理阈值；当DelayedOperationPurgatory中存储的DelayedOperation数量与时间轮中的DelayedOperation数量差距大于该阈值时会出发清理操作
+    * @tparam T 泛型，必须是DelayedOperation子类
+    * @return
+    */
   def apply[T <: DelayedOperation](purgatoryName: String,
                                    brokerId: Int = 0,
                                    purgeInterval: Int = 1000): DelayedOperationPurgatory[T] = {
+    // 创建SystemTimer
     val timer = new SystemTimer(purgatoryName)
     new DelayedOperationPurgatory[T](purgatoryName, timer, brokerId, purgeInterval)
   }
@@ -188,6 +196,7 @@ class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: String,
     metricsTags
   )
 
+  // 如果开启了收割功能，就启动收割机
   if (reaperEnabled)
     expirationReaper.start()
 
@@ -289,6 +298,7 @@ class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: String,
 
   /**
    * Return the number of delayed operations in the expiry queue
+    * 时间轮中有效DelayedOperation的个数
    */
   def delayed() = timeoutTimer.size
 
@@ -304,20 +314,24 @@ class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: String,
    */
   private def watchForOperation(key: Any, operation: T) {
     inReadLock(removeWatchersLock) {
+      // 获取watchersForKey中键对应的Watchers，没有就创建一个
       val watcher = watchersForKey.getAndMaybePut(key)
+      // 将操作放入到Watchers中
       watcher.watch(operation)
     }
   }
 
   /*
    * Remove the key from watcher lists if its list is empty
+   * 如果watchersForKey中某个键对应的Watchers中没有参与监听的DelayedOperation
+   * 就将该键和Watchers从watchersForKey中移除
    */
   private def removeKeyIfEmpty(key: Any, watchers: Watchers) {
     inWriteLock(removeWatchersLock) {
       // if the current key is no longer correlated to the watchers to remove, skip
       if (watchersForKey.get(key) != watchers)
         return
-
+      // 执行移除
       if (watchers != null && watchers.watched == 0) {
         watchersForKey.remove(key)
       }
@@ -326,6 +340,7 @@ class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: String,
 
   /**
    * Shutdown the expire reaper thread
+    * 关闭收割线程
    */
   def shutdown() {
     if (reaperEnabled)

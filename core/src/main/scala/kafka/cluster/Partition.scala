@@ -118,7 +118,9 @@ class Partition(val topic: String,
   def leaderReplicaIfLocal(): Option[Replica] = {
     leaderReplicaIdOpt match {
       case Some(leaderReplicaId) =>
+        // leaderReplicaId与localBrokerId相同说明是Leader
         if (leaderReplicaId == localBrokerId)
+          // 获取对应的Replica
           getReplica(localBrokerId)
         else
           None
@@ -347,12 +349,20 @@ class Partition(val topic: String,
    * Returns true if the HW was incremented, and false otherwise.
    * Note There is no need to acquire the leaderIsrUpdate lock here
    * since all callers of this private API acquire that lock
+    *
+    * 在分区的ISR发生变化，或任何副本的LEO发生变化时会触发该方法更新HW
+    * 当HW发生更新时返回true，否则返回false
    */
   private def maybeIncrementLeaderHW(leaderReplica: Replica): Boolean = {
+    // 获取In-Sync副本的LEO
     val allLogEndOffsets = inSyncReplicas.map(_.logEndOffset)
+    // 根据所有In_Sync副本的LEO来计算HighWatermark，即取最小的LEO为HighWatermark
     val newHighWatermark = allLogEndOffsets.min(new LogOffsetMetadata.OffsetOrdering)
+    // 旧的HighWatermark
     val oldHighWatermark = leaderReplica.highWatermark
+    // 新的HighWatermark比旧的HighWatermark大，或者新的HighWatermark还处于该LogSegment上
     if (oldHighWatermark.messageOffset < newHighWatermark.messageOffset || oldHighWatermark.onOlderSegment(newHighWatermark)) {
+      // 更新HighWatermark
       leaderReplica.highWatermark = newHighWatermark
       debug("High watermark for partition [%s,%d] updated to %s".format(topic, partitionId, newHighWatermark))
       true
@@ -368,7 +378,9 @@ class Partition(val topic: String,
    */
   private def tryCompleteDelayedRequests() {
     val requestKey = new TopicPartitionOperationKey(this.topic, this.partitionId)
+    // 尝试完成消息拉取请求
     replicaManager.tryCompleteDelayedFetch(requestKey)
+    // 尝试完成消息写入请求
     replicaManager.tryCompleteDelayedProduce(requestKey)
   }
 
@@ -425,25 +437,37 @@ class Partition(val topic: String,
 
   def appendMessagesToLeader(messages: ByteBufferMessageSet, requiredAcks: Int = 0) = {
     val (info, leaderHWIncremented) = inReadLock(leaderIsrUpdateLock) {
+      /**
+        * 检查当前分区是否就是Leader分区，内部根据ReplicaID是否与BrokerID相同来判断
+        * 如果当前分区就是Leader分区就返回该分区副本（即Leader副本），否则返回None
+        */
       val leaderReplicaOpt = leaderReplicaIfLocal()
       leaderReplicaOpt match {
+        // 当前分区是Leader分区，并且得到了对应的副本分区
         case Some(leaderReplica) =>
+          // 获取对应的Log对象
           val log = leaderReplica.log.get
+          // 根据Log的配置获取最小ISR
           val minIsr = log.config.minInSyncReplicas
+          // 查看当前Leader的In-Sync副本数量
           val inSyncSize = inSyncReplicas.size
 
           // Avoid writing to leader if there are not enough insync replicas to make it safe
+          // 如果In-Sync小于分区要求的最小ISR，且ACK要求为-1，则表示In-Sync满足不了ISR，抛出NotEnoughReplicasException异常
           if (inSyncSize < minIsr && requiredAcks == -1) {
             throw new NotEnoughReplicasException("Number of insync replicas for partition [%s,%d] is [%d], below required minimum [%d]"
               .format(topic, partitionId, inSyncSize, minIsr))
           }
 
+          // 否则In-Sync是满足最小ISR的，将消息数据添加Log中
           val info = log.append(messages, assignOffsets = true)
           // probably unblock some follower fetch requests since log end offset has been updated
+          // 尝试完成延迟的拉取操作，这个拉取操作一般是副本的拉取操作，传入的键是以主题和分区ID组成的TopicPartitionOperationKey
           replicaManager.tryCompleteDelayedFetch(new TopicPartitionOperationKey(this.topic, this.partitionId))
           // we may need to increment high watermark since ISR could be down to 1
+          // 可能需要更新HighWatermark值
           (info, maybeIncrementLeaderHW(leaderReplica))
-
+        // 当前分区不是Leader分区，抛出NotLeaderForPartitionException异常
         case None =>
           throw new NotLeaderForPartitionException("Leader not local for partition [%s,%d] on broker %d"
             .format(topic, partitionId, localBrokerId))
@@ -452,6 +476,7 @@ class Partition(val topic: String,
 
     // some delayed operations may be unblocked after HW changed
     if (leaderHWIncremented)
+      // 如果HighWatermark发生了更新，尝试完成延迟请求
       tryCompleteDelayedRequests()
 
     info

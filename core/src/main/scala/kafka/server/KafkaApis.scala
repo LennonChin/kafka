@@ -327,9 +327,12 @@ class KafkaApis(val requestChannel: RequestChannel,
    * Handle a produce request
    */
   def handleProducerRequest(request: RequestChannel.Request) {
+    // 获取请求体并转换为ProduceRequest对象
     val produceRequest = request.body.asInstanceOf[ProduceRequest]
+    // 计算需要添加的字节数
     val numBytesAppended = request.header.sizeOf + produceRequest.sizeOf
 
+    // 检查ProducerRequest请求定义的分区是否授权有写操作
     val (authorizedRequestInfo, unauthorizedRequestInfo) = produceRequest.partitionRecords.asScala.partition {
       case (topicPartition, _) => authorize(request.session, Write, new Resource(Topic, topicPartition.topic))
     }
@@ -414,16 +417,20 @@ class KafkaApis(val requestChannel: RequestChannel,
     }
 
     if (authorizedRequestInfo.isEmpty)
+      // 如果ProducerRequest请求的所有分区都无写授权，就直接调用sendResponseCallback()回调，无响应数据
       sendResponseCallback(Map.empty)
     else {
+      // 决定是否可以操作内部主题，只有发出请求的客户端ID是"__admin_client"才可以操作内部主题
       val internalTopicsAllowed = request.header.clientId == AdminUtils.AdminClientId
 
       // Convert ByteBuffer to ByteBufferMessageSet
+      // 将授权的ProducerRequest请求写入数据转换为ByteBufferMessageSet对象
       val authorizedMessagesPerPartition = authorizedRequestInfo.map {
         case (topicPartition, buffer) => (topicPartition, new ByteBufferMessageSet(buffer))
       }
 
       // call the replica manager to append messages to the replicas
+      // 使用ReplicaManager的appendMessages(...)方法添加数据
       replicaManager.appendMessages(
         produceRequest.timeout.toLong,
         produceRequest.acks,
@@ -434,6 +441,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       // if the request is put into the purgatory, it will have a held reference
       // and hence cannot be garbage collected; hence we clear its data here in
       // order to let GC re-claim its memory since it is already appended to log
+      // 将ProducerRequest内部数据清除以进行GC
       produceRequest.clearPartitionRecords()
     }
   }

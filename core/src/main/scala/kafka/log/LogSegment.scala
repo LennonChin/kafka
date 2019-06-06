@@ -162,7 +162,7 @@ class LogSegment(val log: FileMessageSet,
 
     // calculate the length of the message set to read based on whether or not they gave us a maxOffset
     // 计算需要读取的字节数
-    val length = maxOffset match { // maxOffset通常是Replica的HighWater，消费者最多只能读到HighWater位置的消息
+    val length = maxOffset match { // maxOffset通常是Replica的HighWatermark，消费者最多只能读到HighWatermark位置的消息
       case None =>
         // no max offset, just read until the max position
         // 没有maxOffset

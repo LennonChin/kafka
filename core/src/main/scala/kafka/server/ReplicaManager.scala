@@ -210,6 +210,7 @@ class ReplicaManager(val config: KafkaConfig,
    * 2. A new message set is appended to the local log (for follower fetch)
    */
   def tryCompleteDelayedFetch(key: DelayedOperationKey) {
+    // 使用DelayedOperationPurgatory来完成延迟操作
     val completed = delayedFetchPurgatory.checkAndComplete(key)
     debug("Request key %s unblocked %d fetch requests.".format(key.keyLabel, completed))
   }
@@ -327,7 +328,7 @@ class ReplicaManager(val config: KafkaConfig,
                      messagesPerPartition: Map[TopicPartition, MessageSet],
                      responseCallback: Map[TopicPartition, PartitionResponse] => Unit) {
 
-    if (isValidRequiredAcks(requiredAcks)) {
+    if (isValidRequiredAcks(requiredAcks)) { // 检查ACK参数是否合法-1、0或1中的一个
       val sTime = SystemTime.milliseconds
       // 将消息追加到Log中，同时还会检测delayedFetchPurgatory中相关key对应的DelayedFetch，满足条件则将其执行完成
       val localProduceResults = appendToLocalLog(internalTopicsAllowed, messagesPerPartition, requiredAcks)
@@ -341,13 +342,19 @@ class ReplicaManager(val config: KafkaConfig,
       }
       // 检测是否生成DelayedProduce，其中一个条件是检测ProduceRequest中的acks字段是否为-1
       if (delayedRequestRequired(requiredAcks, messagesPerPartition, localProduceResults)) {
+        /**
+          * 走到这里说明delayedRequestRequired()方法返回值为true，需要满足下面三个条件：
+          * 1. ACK为-1；
+          * 2. 有数据需要写入；
+          * 3. 至少有一个分区的数据写入是成功的。
+          */
         // create delayed produce operation
-        val produceMetadata = ProduceMetadata(requiredAcks, produceStatus)
         // 创建DelayedProduce对象
+        val produceMetadata = ProduceMetadata(requiredAcks, produceStatus)
         val delayedProduce = new DelayedProduce(timeout, produceMetadata, this, responseCallback)
 
         // create a list of (topic, partition) pairs to use as keys for this delayed produce operation
-        // 将ProduceRequest中的主题映射为TopicPartitionOperationKey
+        // 将ProduceRequest中的主题映射为TopicPartitionOperationKey序列
         val producerRequestKeys = messagesPerPartition.keys.map(new TopicPartitionOperationKey(_)).toSeq
 
         // try to complete the request immediately, otherwise put it into the purgatory
@@ -364,6 +371,7 @@ class ReplicaManager(val config: KafkaConfig,
     } else {
       // If required.acks is outside accepted range, something is wrong with the client
       // Just return an error and don't handle the request at all
+      // ACK参数不合法，返回错误信息，错误码为INVALID_REQUIRED_ACKS
       val responseStatus = messagesPerPartition.map {
         case (topicAndPartition, messageSet) =>
           (topicAndPartition -> new PartitionResponse(Errors.INVALID_REQUIRED_ACKS.code,
@@ -381,9 +389,9 @@ class ReplicaManager(val config: KafkaConfig,
   // 3. at least one partition append was successful (fewer errors than partitions)
   private def delayedRequestRequired(requiredAcks: Short, messagesPerPartition: Map[TopicPartition, MessageSet],
                                        localProduceResults: Map[TopicPartition, LogAppendResult]): Boolean = {
-    requiredAcks == -1 &&
-    messagesPerPartition.size > 0 &&
-    localProduceResults.values.count(_.error.isDefined) < messagesPerPartition.size
+    requiredAcks == -1 && // ACK为-1
+    messagesPerPartition.size > 0 && // 有消息数据需要写入
+    localProduceResults.values.count(_.error.isDefined) < messagesPerPartition.size // 至少有一个分区的写入操作时成功的
   }
 
   private def isValidRequiredAcks(requiredAcks: Short): Boolean = {
@@ -397,25 +405,33 @@ class ReplicaManager(val config: KafkaConfig,
                                messagesPerPartition: Map[TopicPartition, MessageSet],
                                requiredAcks: Short): Map[TopicPartition, LogAppendResult] = {
     trace("Append [%s] to local log ".format(messagesPerPartition))
+    // 遍历消息集合
     messagesPerPartition.map { case (topicPartition, messages) =>
       BrokerTopicStats.getBrokerTopicStats(topicPartition.topic).totalProduceRequestRate.mark()
       BrokerTopicStats.getBrokerAllTopicsStats().totalProduceRequestRate.mark()
 
       // reject appending to internal topics if it is not allowed
       if (Topic.isInternal(topicPartition.topic) && !internalTopicsAllowed) {
+        // 内部主题且内部主题不允许添加，拒绝添加
         (topicPartition, LogAppendResult(
           LogAppendInfo.UnknownLogAppendInfo,
-          Some(new InvalidTopicException("Cannot append to internal topic %s".format(topicPartition.topic)))))
+          Some(new InvalidTopicException("Cannot append to internal topic %s".format(topicPartition.topic)))
+        ))
       } else {
         try {
+          // 根据主题和分区获取对应的Partition对象
           val partitionOpt = getPartition(topicPartition.topic, topicPartition.partition)
           val info = partitionOpt match {
+            // 分区存在
             case Some(partition) =>
+              // 通过Partition对象将消息添加到Leader副本分区，该方法还会尝试在HighWatermark发生更新时尝试完成写入消息和拉取消息的请求
               partition.appendMessagesToLeader(messages.asInstanceOf[ByteBufferMessageSet], requiredAcks)
+            // 分区不存在，抛出UnknownTopicOrPartitionException异常
             case None => throw new UnknownTopicOrPartitionException("Partition %s doesn't exist on %d"
               .format(topicPartition, localBrokerId))
           }
 
+          // 添加的消息的数量
           val numAppendedMessages =
             if (info.firstOffset == -1L || info.lastOffset == -1L)
               0
@@ -430,6 +446,7 @@ class ReplicaManager(val config: KafkaConfig,
 
           trace("%d bytes written to log %s-%d beginning at offset %d and ending at offset %d"
             .format(messages.sizeInBytes, topicPartition.topic, topicPartition.partition, info.firstOffset, info.lastOffset))
+          // 返回字典结果
           (topicPartition, LogAppendResult(info))
         } catch {
           // NOTE: Failed produce requests metric is not incremented for known exceptions
@@ -438,8 +455,9 @@ class ReplicaManager(val config: KafkaConfig,
             fatal("Halting due to unrecoverable I/O error while handling produce request: ", e)
             Runtime.getRuntime.halt(1)
             (topicPartition, null)
+          // 将异常包装后向上抛出，这里包括了NotLeaderForPartitionException异常
           case e@ (_: UnknownTopicOrPartitionException |
-                   _: NotLeaderForPartitionException |
+                   _: NotLeaderForPartitionException | // 当前分区不是Leader分区的异常
                    _: RecordTooLargeException |
                    _: RecordBatchTooLargeException |
                    _: CorruptRecordException |

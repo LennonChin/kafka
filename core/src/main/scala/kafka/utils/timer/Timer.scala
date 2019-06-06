@@ -118,20 +118,26 @@ class SystemTimer(executorName: String,
    * 如果任务到期了，则提交到taskExecutor线程池中执行。
    */
   def advanceClock(timeoutMs: Long): Boolean = {
-    // 从队列中取出第一个TimerTaskList元素，会阻塞，等待超时时间为timeoutMs
+    /**
+      * 从队列中取出第一个TimerTaskList元素，会阻塞，等待超时时间为timeoutMs
+      * 注意，这里取出的TimerTaskList的过期时间是到期的，也就是说该链表中的任务已经到执行时间了
+      * 如果没有到期的TimerTaskList将在阻塞等待超时后返回null
+      */
     var bucket = delayQueue.poll(timeoutMs, TimeUnit.MILLISECONDS)
     if (bucket != null) { // 取出TimerTaskList元素不为空
-      // 加读锁
+      // 加写锁
       writeLock.lock()
       try {
         while (bucket != null) { // 重新检查取出的TimerTaskList元素
-          // 时间轮指针推进，传入时间为TimerTaskList的过期时间
+          // 根据TimerTaskList的过期时间推进时间轮指针
           timingWheel.advanceClock(bucket.getExpiration())
           /**
             * 调用TimerTaskList对象的flush()方法重新处理其中的任务
             * 该操作会将bucket中所有元素移除来然后重新添加到时间轮
             * 在重新添加的操作中如果遇到到期的任务会交给taskExecutor线程池执行
             * 也有可能对其进行降级到下层时间轮
+            * 注意，在这个重新添加的过程中，到期的任务是会被直接提交到线程池执行的
+            * 可以回顾 addTimerTaskEntry() 方法
             */
           bucket.flush(reinsert)
           // 再次从delayQueue中取一个TimerTaskList元素，不会阻塞
