@@ -98,7 +98,7 @@ class DelayedFetch(delayMs: Long,
             val replica = replicaManager.getLeaderReplicaIfLocal(topicAndPartition.topic, topicAndPartition.partition)
             /**
               * 根据FetchRequest请求的来源设置能读取的最大offset值。
-              * 很显然，消费者对应的endOffset是HW，而Follower副本对应的endOffset是LEO
+              * 很显然，消费者对应的endOffset是HighWatermark，而Follower副本对应的endOffset是LogEndOffset
               */
             val endOffset =
               if (fetchMetadata.fetchOnlyCommitted)

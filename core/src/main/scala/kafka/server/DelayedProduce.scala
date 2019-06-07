@@ -95,10 +95,14 @@ class DelayedProduce(delayMs: Long,
    * it produces to is satisfied by one of the following:
    *
    * Case A: This broker is no longer the leader: set an error in response
+    *         当前broker不再是Leader副本了（可能发生Leader迁移），则需要在响应中记录错误
    * Case B: This broker is the leader:
+    *         当前broker还是Leader副本
    *   B.1 - If there was a local error thrown while checking if at least requiredAcks
    *         replicas have caught up to this operation: set an error in response
+    *         如果在In-Sync副本完成了同步，但在这个过程中发生了本地错误，则需要在响应中记录错误
    *   B.2 - Otherwise, set the response with no error.
+    *         其他情况，清除响应中的错误
    */
   override def tryComplete(): Boolean = {
     // check for each partition if it still has pending acks
@@ -119,16 +123,18 @@ class DelayedProduce(delayMs: Long,
             partition.checkEnoughReplicasReachOffset(status.requiredOffset)
           case None =>
             // Case A
-            // 条件A：找不到此分区的Leader
+            // 条件A：找不到此分区的Leader，记录错误
             (false, Errors.UNKNOWN_TOPIC_OR_PARTITION.code)
         }
         if (errorCode != Errors.NONE.code) { // 条件B.1： 出现异常
           // Case B.1
           status.acksPending = false
+          // 记录错误
           status.responseStatus.errorCode = errorCode
         } else if (hasEnough) { // 条件B.2：此分区Leader副本的HW大于对应的requiredOffset
           // Case B.2
           status.acksPending = false
+          // 清除错误
           status.responseStatus.errorCode = Errors.NONE.code
         }
       }

@@ -198,6 +198,7 @@ class ReplicaManager(val config: KafkaConfig,
    * 2. A follower replica's fetch operation is received (for acks > 1)
    */
   def tryCompleteDelayedProduce(key: DelayedOperationKey) {
+    // 尝试完成DelayedProduce炼狱中的DelayedProduce延迟任务
     val completed = delayedProducePurgatory.checkAndComplete(key)
     debug("Request key %s unblocked %d producer requests.".format(key.keyLabel, completed))
   }
@@ -288,6 +289,7 @@ class ReplicaManager(val config: KafkaConfig,
   }
 
   def getReplicaOrException(topic: String, partition: Int): Replica = {
+    // 获取对应主题分区的Replica对象，无论是否是Leader分区
     val replicaOpt = getReplica(topic, partition)
     if(replicaOpt.isDefined)
       replicaOpt.get
@@ -296,11 +298,15 @@ class ReplicaManager(val config: KafkaConfig,
   }
 
   def getLeaderReplicaIfLocal(topic: String, partitionId: Int): Replica =  {
+    // 获取主题分区对应的Partition对象
     val partitionOpt = getPartition(topic, partitionId)
     partitionOpt match {
+      // 无法匹配对应的主题分区，抛出UnknownTopicOrPartitionException异常
       case None =>
         throw new UnknownTopicOrPartitionException("Partition [%s,%d] doesn't exist on %d".format(topic, partitionId, config.brokerId))
+      // 可以匹配对应的主题分区
       case Some(partition) =>
+        // 获得对应的Leader分区Replica对象
         partition.leaderReplicaIfLocal match {
           case Some(leaderReplica) => leaderReplica
           case None =>
@@ -485,7 +491,9 @@ class ReplicaManager(val config: KafkaConfig,
                     responseCallback: Map[TopicAndPartition, FetchResponsePartitionData] => Unit) {
     // 只有Follower副本才有replicaId，消费者是没有的，消费者的replicaId始终是-1
     val isFromFollower = replicaId >= 0
+    // 如果replicaId != -2，就说明是正常的拉取请求，则只能拉取Leader副本的数据
     val fetchOnlyFromLeader: Boolean = replicaId != Request.DebuggingConsumerId
+    // 判断是否是从broker发出的拉取请求，不是的话就只能读取HighWatermark线以下的数据
     val fetchOnlyCommitted: Boolean = ! Request.isValidBrokerId(replicaId)
 
     // read from local logs
@@ -498,10 +506,10 @@ class ReplicaManager(val config: KafkaConfig,
     if(Request.isValidBrokerId(replicaId))
       /**
         * updateFollowerLogReadResults()方法用来处理来自Follower副本的FetchRequest请求，主要做下面4件事：
-        * 1. 在Leader中维护了Follower副本的各种状态，这里会更新对应Follower副本的状态，例如，更新LEO、更新lastCaughtUpTimeMsUnderlying等
-        * 2. 检测是否需要对ISR集合进行扩张，如果ISR集合发生变化，则将新的ISR集合的记录保存到ZooKeeper中
-        * 3. 检测是否后移Leader的HW
-        * 4. 检测delayedProducePurgatory中相关key对应的DelayedProduce，满足条件则将其执行完成
+        * 1. 在Leader中维护了Follower副本的各种状态，这里会更新对应Follower副本的状态，例如，更新LEO、更新lastCaughtUpTimeMsUnderlying等；
+        * 2. 检测是否需要对ISR集合进行扩张，如果ISR集合发生变化，则将新的ISR集合的记录保存到ZooKeeper中；
+        * 3. 检测是否后移Leader的HighWatermark；
+        * 4. 检测delayedProducePurgatory中相关key对应的DelayedProduce，满足条件则将其执行完成。
         */
       updateFollowerLogReadResults(replicaId, logReadResults)
 
@@ -518,10 +526,10 @@ class ReplicaManager(val config: KafkaConfig,
     //                        4) some error happens while reading data
     /**
       * 判断是否能够立即返回FetchResponse，下面四个条件满足任意一个就可以立即返回FetchResponse：
-      * 1. FetchRequest的timeout＜=0，即消费者或Follower副本不希望等待
-      * 2. FetchRequest没有指定要读取的分区，即fetchInfo.size ＜= 0
-      * 3. 已经读取了足够的数据，即bytesReadable ＞= fetchMinBytes
-      * 4. 在读取数据的过程中发生了异常，即检查errorReadingData
+      * 1. FetchRequest的timeout＜=0，即消费者或Follower副本不希望等待；
+      * 2. FetchRequest没有指定要读取的分区，即fetchInfo.size ＜= 0；
+      * 3. 已经读取了足够的数据，即bytesReadable ＞= fetchMinBytes；
+      * 4. 在读取数据的过程中发生了异常，即检查errorReadingData。
       */
     if(timeout <= 0 || fetchInfo.size <= 0 || bytesReadable >= fetchMinBytes || errorReadingData) {
       val fetchPartitionData = logReadResults.mapValues(result =>
@@ -552,6 +560,7 @@ class ReplicaManager(val config: KafkaConfig,
 
   /**
    * Read from a single topic/partition at the given offset upto maxSize bytes
+    * 从指定的主题分区读取数据，PartitionFetchInfo对象中存储了读取的起始offset和字节大小
    */
   def readFromLocalLog(fetchOnlyFromLeader: Boolean,
                        readOnlyCommitted: Boolean,
@@ -566,12 +575,16 @@ class ReplicaManager(val config: KafkaConfig,
           trace("Fetching log segment for topic %s, partition %d, offset %d, size %d".format(topic, partition, offset, fetchSize))
 
           // decide whether to only fetch from leader
+          // 根据fetchOnlyFromLeader参数决定是否只从Leader分区拉取
           val localReplica = if (fetchOnlyFromLeader)
+            // 该方法会获取Leader分区的Replica对象
             getLeaderReplicaIfLocal(topic, partition)
           else
+            // 该方法获取的Replica对象不保证是Leader分区的
             getReplicaOrException(topic, partition)
 
           // decide whether to only fetch committed data (i.e. messages below high watermark)
+          // 根据readOnlyCommitted参数决定是否只拉取HighWatermark线以下的数据
           val maxOffsetOpt = if (readOnlyCommitted)
             Some(localReplica.highWatermark.messageOffset)
           else
@@ -583,28 +596,30 @@ class ReplicaManager(val config: KafkaConfig,
            * where data gets appended to the log immediately after the replica has consumed from it
            * This can cause a replica to always be out of sync.
            */
+          // 获取Replica的logEndOffset
           val initialLogEndOffset = localReplica.logEndOffset
           val logReadInfo = localReplica.log match {
             case Some(log) =>
+              // 从Replica的Log中读取数据，注意此时读取的最大offset由maxOffsetOpt控制了
               log.read(offset, fetchSize, maxOffsetOpt)
             case None =>
               error("Leader for partition [%s,%d] does not have a local log".format(topic, partition))
               FetchDataInfo(LogOffsetMetadata.UnknownOffsetMetadata, MessageSet.Empty)
           }
-
+          // 检查是否读到了Log的结尾
           val readToEndOfLog = initialLogEndOffset.messageOffset - logReadInfo.fetchOffsetMetadata.messageOffset <= 0
-
+          // 将读取到的数据构造为LogReadResult对象
           LogReadResult(logReadInfo, localReplica.highWatermark.messageOffset, fetchSize, readToEndOfLog, None)
         } catch {
           // NOTE: Failed fetch requests metric is not incremented for known exceptions since it
           // is supposed to indicate un-expected failure of a broker in handling a fetch request
-          case utpe: UnknownTopicOrPartitionException =>
+          case utpe: UnknownTopicOrPartitionException => // 未知主题分区异常
             LogReadResult(FetchDataInfo(LogOffsetMetadata.UnknownOffsetMetadata, MessageSet.Empty), -1L, fetchSize, false, Some(utpe))
-          case nle: NotLeaderForPartitionException =>
+          case nle: NotLeaderForPartitionException => // 当前副本不是Leader副本异常
             LogReadResult(FetchDataInfo(LogOffsetMetadata.UnknownOffsetMetadata, MessageSet.Empty), -1L, fetchSize, false, Some(nle))
-          case rnae: ReplicaNotAvailableException =>
+          case rnae: ReplicaNotAvailableException => // 副本不可用异常
             LogReadResult(FetchDataInfo(LogOffsetMetadata.UnknownOffsetMetadata, MessageSet.Empty), -1L, fetchSize, false, Some(rnae))
-          case oor : OffsetOutOfRangeException =>
+          case oor : OffsetOutOfRangeException => // 读取数据超限异常
             LogReadResult(FetchDataInfo(LogOffsetMetadata.UnknownOffsetMetadata, MessageSet.Empty), -1L, fetchSize, false, Some(oor))
           case e: Throwable =>
             BrokerTopicStats.getBrokerTopicStats(topic).failedFetchRequestRate.mark()
@@ -908,13 +923,20 @@ class ReplicaManager(val config: KafkaConfig,
 
   private def updateFollowerLogReadResults(replicaId: Int, readResults: Map[TopicAndPartition, LogReadResult]) {
     debug("Recording follower broker %d log read results: %s ".format(replicaId, readResults))
+    // 遍历拉取的数据结果
     readResults.foreach { case (topicAndPartition, readResult) =>
+      // 获取对应的主题分区的Partition对象
       getPartition(topicAndPartition.topic, topicAndPartition.partition) match {
         case Some(partition) =>
+          // 更新副本
           partition.updateReplicaLogReadResult(replicaId, readResult)
 
           // for producer requests with ack > 1, we need to check
           // if they can be unblocked after some follower's log end offsets have moved
+          /**
+            * 尝试完成时间轮中的DelayedProduce延迟任务；因为在生产消息时可能需要等待In-Sync副本同步才能向客户端确认ACK
+            * 如果Follower副本完成了同步，理应主动触发在向同一个主题分区写数据而生成的DelayedProduce延迟任务，尝试完成生产请求
+            */
           tryCompleteDelayedProduce(new TopicPartitionOperationKey(topicAndPartition))
         case None =>
           warn("While recording the replica LEO, the partition %s hasn't been created.".format(topicAndPartition))

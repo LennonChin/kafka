@@ -50,6 +50,7 @@ class Replica(val brokerId: Int,
   def lastCaughtUpTimeMs = lastCaughtUpTimeMsUnderlying.get()
 
   def updateLogReadResult(logReadResult : LogReadResult) {
+    // 更新LEO
     logEndOffset = logReadResult.info.fetchOffsetMetadata
 
     /* If the request read up to the log end offset snapshot when the read was initiated,

@@ -236,11 +236,17 @@ class Partition(val topic: String,
    * Update the log end offset of a certain replica of this partition
    */
   def updateReplicaLogReadResult(replicaId: Int, logReadResult: LogReadResult) {
+    // 根据replicaId获取对应的Replica对象
     getReplica(replicaId) match {
       case Some(replica) =>
+        // 更新副本的LEO
         replica.updateLogReadResult(logReadResult)
         // check if we need to expand ISR to include this replica
         // if it is not in the ISR yet
+        /**
+          * 检查是否应该将当前副本加入In-Sync集合；有可能当前副本由于滞后被In-Sync集合排除了，
+          * 此时可以执行一次检测，如果满足条件就将当前副本重新添加到In-Sync集合中
+          */
         maybeExpandIsr(replicaId)
 
         debug("Recorded replica %d log end offset (LEO) position %d for partition %s."
@@ -266,24 +272,36 @@ class Partition(val topic: String,
   def maybeExpandIsr(replicaId: Int) {
     val leaderHWIncremented = inWriteLock(leaderIsrUpdateLock) {
       // check if this replica needs to be added to the ISR
+      // 检测当前Replica是否应该被添加到In-Sync集合中
       leaderReplicaIfLocal() match {
         case Some(leaderReplica) =>
+          // 根据replicaId获取Replica对象
           val replica = getReplica(replicaId).get
+          // 查看Leader副本的HighWatermark
           val leaderHW = leaderReplica.highWatermark
+          /**
+            * 同时满足以下三个条件则可以将当前副本添加到In-Sync集合中：
+            * 1. 当前In-Sync集合不包含当前Replica副本；
+            * 2. 如果是指定的分区副本，需要判断当前副本是否是指定的分区副本之一；
+            * 3. 当前副本的LEO大于等于Leader副本的HighWatermark；
+            */
           if(!inSyncReplicas.contains(replica) &&
              assignedReplicas.map(_.brokerId).contains(replicaId) &&
                   replica.logEndOffset.offsetDiff(leaderHW) >= 0) {
+            // 将当前副本添加到In-Sync集合
             val newInSyncReplicas = inSyncReplicas + replica
             info("Expanding ISR for partition [%s,%d] from %s to %s"
                          .format(topic, partitionId, inSyncReplicas.map(_.brokerId).mkString(","),
                                  newInSyncReplicas.map(_.brokerId).mkString(",")))
             // update ISR in ZK and cache
+            // 更新缓存及Zookeeper中的In-Sync集合数据
             updateIsr(newInSyncReplicas)
             replicaManager.isrExpandRate.mark()
           }
 
           // check if the HW of the partition can now be incremented
           // since the replica maybe now be in the ISR and its LEO has just incremented
+          // 检测分区的HighWatermark是否可以更新了，如果更新了，该方法会返回true
           maybeIncrementLeaderHW(leaderReplica)
 
         case None => false // nothing to do if no longer leader
@@ -292,6 +310,7 @@ class Partition(val topic: String,
 
     // some delayed operations may be unblocked after HW changed
     if (leaderHWIncremented)
+      // 如果分区的HighWatermark发生了更新，尝试完成时间轮中的DelayedProduce和DelayedFetch延迟操作
       tryCompleteDelayedRequests()
   }
 
@@ -303,11 +322,15 @@ class Partition(val topic: String,
    */
   def checkEnoughReplicasReachOffset(requiredOffset: Long): (Boolean, Short) = {
     leaderReplicaIfLocal() match {
+      // 当前副本是Leader副本
       case Some(leaderReplica) =>
         // keep the current immutable replica list reference
+        // 获取当前的In-Sync副本
         val curInSyncReplicas = inSyncReplicas
+        // 已经确认同步的个数，通过遍历副本，判断副本的LEO是否大于requiredOffset
         val numAcks = curInSyncReplicas.count(r => {
           if (!r.isLocal)
+            // 判断副本的LEO是否大于requiredOffset
             if (r.logEndOffset.messageOffset >= requiredOffset) {
               trace("Replica %d of %s-%d received offset %d".format(r.brokerId, topic, partitionId, requiredOffset))
               true
@@ -320,20 +343,32 @@ class Partition(val topic: String,
 
         trace("%d acks satisfied for %s-%d with acks = -1".format(numAcks, topic, partitionId))
 
+        // 主题配置的最小In-Sync副本数
         val minIsr = leaderReplica.log.get.config.minInSyncReplicas
 
+        /**
+          * 如果Leader的HighWatermark大于等于requiredOffset，说明所有In-Sync副本都已经完成同步了，HighWatermark更新了
+          * 1. 此时如果满足了最小In-Sync副本数，直接返回true及NONE错误码即可；
+          * 2. 此时如果还不满足最小In-Sync副本数，说明副本数满足不了，但同步完成了，就返回true及NOT_ENOUGH_REPLICAS_AFTER_APPEND错误码；
+          * 如果Leader的HighWatermark小于requiredOffset，说明In-Sync副本未完成同步，返回false及NONE错误码。
+          */
         if (leaderReplica.highWatermark.messageOffset >= requiredOffset ) {
           /*
           * The topic may be configured not to accept messages if there are not enough replicas in ISR
           * in this scenario the request was already appended locally and then added to the purgatory before the ISR was shrunk
           */
+          // 判断是否满足In-Sync副本最低要求
           if (minIsr <= curInSyncReplicas.size) {
+            // 同步完成
             (true, Errors.NONE.code)
           } else {
+            // 同步完成，但副本数不够
             (true, Errors.NOT_ENOUGH_REPLICAS_AFTER_APPEND.code)
           }
         } else
+          // 未同步完成
           (false, Errors.NONE.code)
+      // 当前副本不是Leader副本
       case None =>
         (false, Errors.NOT_LEADER_FOR_PARTITION.code)
     }
@@ -482,6 +517,7 @@ class Partition(val topic: String,
     info
   }
 
+  // 更新Zookeeper和缓存中的In-Sync集合记录
   private def updateIsr(newIsr: Set[Replica]) {
     val newLeaderAndIsr = new LeaderAndIsr(localBrokerId, leaderEpoch, newIsr.map(r => r.brokerId).toList, zkVersion)
     val (updateSucceeded,newVersion) = ReplicationUtils.updateLeaderAndIsr(zkUtils, topic, partitionId,

@@ -364,7 +364,7 @@ class KafkaApis(val requestChannel: RequestChannel,
 
       // 定义produceResponseCallback()回调函数
       def produceResponseCallback(delayTimeMs: Int) {
-        // 处理acks字段为0的情况，即生产者不需要服务端返回响应
+        // 处理acks字段为0的情况，即生产者不需要服务端确认ACK
         if (produceRequest.acks == 0) {
           // no operation needed if producer request.required.acks = 0; however, if there is any error in handling
           // the request, since no response is expected by the producer, the server will close socket server so that
@@ -390,7 +390,7 @@ class KafkaApis(val requestChannel: RequestChannel,
               */
             requestChannel.noOperation(request.processor, request)
           }
-        } else { // 处理acks字段为1或-1的情况，即生产者需要服务端响应
+        } else { // 处理acks字段为1或-1的情况，即生产者需要服务端确认ACK
           // 创建消息头
           val respHeader = new ResponseHeader(request.header.correlationId)
           // 创建消息体
@@ -450,12 +450,13 @@ class KafkaApis(val requestChannel: RequestChannel,
    * Handle a fetch request
    */
   def handleFetchRequest(request: RequestChannel.Request) {
+    // 转换请求为FetchRequest对象
     val fetchRequest = request.requestObj.asInstanceOf[FetchRequest]
-
+    // 验证主题分区授权情况
     val (authorizedRequestInfo, unauthorizedRequestInfo) = fetchRequest.requestInfo.partition {
       case (topicAndPartition, _) => authorize(request.session, Read, new Resource(Topic, topicAndPartition.topic))
     }
-
+    // 处理未授权主题分区应该返回的数据
     val unauthorizedPartitionData = unauthorizedRequestInfo.mapValues { _ =>
       FetchResponsePartitionData(Errors.TOPIC_AUTHORIZATION_FAILED.code, -1, MessageSet.Empty)
     }
@@ -490,6 +491,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       // 将之前把未认证通过的集合与convertedPartitionData合并
       val mergedPartitionData = convertedPartitionData ++ unauthorizedPartitionData
 
+      // 记录错误日志
       mergedPartitionData.foreach { case (topicAndPartition, data) =>
         if (data.error != Errors.NONE.code)
           debug(s"Fetch request with correlation id ${fetchRequest.correlationId} from client ${fetchRequest.clientId} " +
@@ -499,6 +501,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         BrokerTopicStats.getBrokerAllTopicsStats().bytesOutRate.mark(data.messages.sizeInBytes)
       }
 
+      // 用于发送响应
       def fetchResponseCallback(delayTimeMs: Int) {
         trace(s"Sending fetch response to client ${fetchRequest.clientId} of " +
           s"${convertedPartitionData.values.map(_.messages.sizeInBytes).sum} bytes")
@@ -526,9 +529,11 @@ class KafkaApis(val requestChannel: RequestChannel,
     }
 
     if (authorizedRequestInfo.isEmpty)
+      // 没有通过授权的主题分区，直接返回空字典
       sendResponseCallback(Map.empty)
     else {
       // call the replica manager to fetch messages from the local replica
+      // 有通过授权的主题分区，使用ReplicaManager进行处理
       replicaManager.fetchMessages(
         fetchRequest.maxWait.toLong,
         fetchRequest.replicaId,
