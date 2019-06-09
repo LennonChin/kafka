@@ -687,9 +687,11 @@ class Log(val dir: File,
    */
   def convertToOffsetMetadata(offset: Long): LogOffsetMetadata = {
     try {
+      // 通过Log进行读取
       val fetchDataInfo = read(offset, 1)
       fetchDataInfo.fetchOffsetMetadata
     } catch {
+      // 如果初始化失败，则将LogOffsetMetadata.messageOffset重置为-1，另外两个字段的值重置为0
       case e: OffsetOutOfRangeException => LogOffsetMetadata.UnknownOffsetMetadata
     }
   }

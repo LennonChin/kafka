@@ -49,11 +49,13 @@ class Pool[K,V](valueFactory: Option[(K) => V] = None) extends Iterable[(K, V)] 
    *         put a value.
    */
   def getAndMaybePut(key: K) = {
-    if (valueFactory.isEmpty)
+    if (valueFactory.isEmpty) // 检查值工厂
       throw new KafkaException("Empty value factory in pool.")
+    // 尝试获取
     val curr = pool.get(key)
     if (curr == null) {
-      createLock synchronized {
+      // 如果获取为null，就创建并返回
+      createLock synchronized { // DCL
         val curr = pool.get(key)
         if (curr == null)
           pool.put(key, valueFactory.get(key))

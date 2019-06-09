@@ -78,7 +78,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         case ApiKeys.FETCH => handleFetchRequest(request) // 拉取
         case ApiKeys.LIST_OFFSETS => handleOffsetRequest(request) // 获取offsets
         case ApiKeys.METADATA => handleTopicMetadataRequest(request) // 获取原数据
-        case ApiKeys.LEADER_AND_ISR => handleLeaderAndIsrRequest(request) // 获取Leader及ISR信息
+        case ApiKeys.LEADER_AND_ISR => handleLeaderAndIsrRequest(request) // 操作Leader及ISR信息
         case ApiKeys.STOP_REPLICA => handleStopReplicaRequest(request) // 停止副本
         case ApiKeys.UPDATE_METADATA_KEY => handleUpdateMetadataRequest(request) // 更新原数据
         case ApiKeys.CONTROLLED_SHUTDOWN_KEY => handleControlledShutdownRequest(request)
@@ -119,11 +119,13 @@ class KafkaApis(val requestChannel: RequestChannel,
       request.apiLocalCompleteTimeMs = SystemTime.milliseconds
   }
 
+  // 用于操作Leader或ISR的请求
   def handleLeaderAndIsrRequest(request: RequestChannel.Request) {
     // ensureTopicExists is only for client facing requests
     // We can't have the ensureTopicExists check here since the controller sends it as an advisory to all brokers so they
     // stop serving data to clients for the topic being deleted
     val correlationId = request.header.correlationId
+    // 转换请求为LeaderAndIsrRequest
     val leaderAndIsrRequest = request.body.asInstanceOf[LeaderAndIsrRequest]
 
     try {
@@ -131,6 +133,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         // for each new leader or follower, call coordinator to handle consumer group migration.
         // this callback is invoked under the replica state change lock to ensure proper order of
         // leadership changes
+        // 处理Group迁移
         updatedLeaders.foreach { partition =>
           if (partition.topic == TopicConstants.GROUP_METADATA_TOPIC_NAME)
             coordinator.handleGroupImmigration(partition.partitionId)
@@ -141,16 +144,22 @@ class KafkaApis(val requestChannel: RequestChannel,
         }
       }
 
+      // 根据correlationId构造响应头，请求端会根据响应的correlationId以匹配发送的请求对象
       val responseHeader = new ResponseHeader(correlationId)
       val leaderAndIsrResponse =
-        if (authorize(request.session, ClusterAction, Resource.ClusterResource)) {
+        if (authorize(request.session, ClusterAction, Resource.ClusterResource)) { // 检查授权
+          // 授权通过，调用ReplicaManager的becomeLeaderOrFollower(...)方法进行处理，注意此处会传入上面定义的onLeadershipChange回调方法
           val result = replicaManager.becomeLeaderOrFollower(correlationId, leaderAndIsrRequest, metadataCache, onLeadershipChange)
+          // 将处理的结果构造为LeaderAndIsrResponse响应对象
           new LeaderAndIsrResponse(result.errorCode, result.responseMap.mapValues(new JShort(_)).asJava)
         } else {
+          // 授权未通过，向leaderAndIsrRequest中记录CLUSTER_AUTHORIZATION_FAILED错误码
           val result = leaderAndIsrRequest.partitionStates.asScala.keys.map((_, new JShort(Errors.CLUSTER_AUTHORIZATION_FAILED.code))).toMap
+          // 构造LeaderAndIsrResponse响应，错误码为CLUSTER_AUTHORIZATION_FAILED
           new LeaderAndIsrResponse(Errors.CLUSTER_AUTHORIZATION_FAILED.code, result.asJava)
         }
 
+      // 使用RequestChannel发送响应
       requestChannel.sendResponse(new Response(request, new ResponseSend(request.connectionId, responseHeader, leaderAndIsrResponse)))
     } catch {
       case e: KafkaStorageException =>

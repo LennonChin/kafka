@@ -38,20 +38,33 @@ import org.apache.kafka.common.requests.PartitionState
 
 /**
  * Data structure that represents a topic partition. The leader maintains the AR, ISR, CUR, RAR
- */
+  * @param topic 代表的主题
+  * @param partitionId 代表的分区编号
+  * @param time
+  * @param replicaManager
+  */
 class Partition(val topic: String,
                 val partitionId: Int,
                 time: Time,
                 replicaManager: ReplicaManager) extends Logging with KafkaMetricsGroup {
+  // 该分区所在的brokerId
   private val localBrokerId = replicaManager.config.brokerId
+  // 当前broker上的LogManager对象
   private val logManager = replicaManager.logManager
+  // 操作Zookeeper的辅助类
   private val zkUtils = replicaManager.zkUtils
+  // 维护该分区的全部副本的集合信息（AR集合）
   private val assignedReplicaMap = new Pool[Int, Replica]
   // The read lock is only required when multiple reads are executed and needs to be in a consistent manner
+  // 更新ISR使用的读写锁
   private val leaderIsrUpdateLock = new ReentrantReadWriteLock()
+  // Zookeeper中的版本
   private var zkVersion: Int = LeaderAndIsr.initialZKVersion
+  // Leader副本的年代信息
   @volatile private var leaderEpoch: Int = LeaderAndIsr.initialLeaderEpoch - 1
+  // 该分区的Leader副本的ID
   @volatile var leaderReplicaIdOpt: Option[Int] = None
+  // 维护该分区的ISR集合，ISR是AR的子集
   @volatile var inSyncReplicas: Set[Replica] = Set.empty[Replica]
 
   /* Epoch of the controller that last changed the leader. This needs to be initialized correctly upon broker startup.
@@ -83,31 +96,46 @@ class Partition(val topic: String,
     }
   }
 
+  // 获取或创建Replica
   def getOrCreateReplica(replicaId: Int = localBrokerId): Replica = {
+    // 根据replicaId从assignedReplicaMap中查找Replica对象
     val replicaOpt = getReplica(replicaId)
     replicaOpt match {
+      // 查找到了，直接返回
       case Some(replica) => replica
       case None =>
-        if (isReplicaLocal(replicaId)) {
-          val config = LogConfig.fromProps(logManager.defaultConfig.originals,
+        // 未查找到，将创建
+        if (isReplicaLocal(replicaId)) { // 判断是否为Local Replica
+          // 获取配置信息，Zookeeper中的配置会覆盖默认的配置
+          val config = LogConfig.fromProps(logManager.defaultConfig.originals, // 默认配置
+                                            // 从Zookeeper中获取
                                            AdminUtils.fetchEntityConfig(zkUtils, ConfigType.Topic, topic))
+          // 使用LogManager创建对应的Log，如果对应的Log已存在会直接返回
           val log = logManager.createLog(TopicAndPartition(topic, partitionId), config)
+          // 获取HighWatermark Checkpoint，该信息存储在每个数据目录下的replication-offset-checkpoint文件中
           val checkpoint = replicaManager.highWatermarkCheckpoints(log.dir.getParentFile.getAbsolutePath)
+          // 读取replication-offset-checkpoint内的数据
           val offsetMap = checkpoint.read
+          // 该Checkpoint数据中没有当前Partition的HighWatermark信息
           if (!offsetMap.contains(TopicAndPartition(topic, partitionId)))
             info("No checkpointed highwatermark is found for partition [%s,%d]".format(topic, partitionId))
+          // 获取对应的HighWatermark，并且与LEO进行比较，最小的那个作为此副本的HighWatermark
           val offset = offsetMap.getOrElse(TopicAndPartition(topic, partitionId), 0L).min(log.logEndOffset)
+          // 创建Replica对象，并添加到assignedReplicaMap集合中管理
           val localReplica = new Replica(replicaId, this, time, offset, Some(log))
           addReplicaIfNotExists(localReplica)
         } else {
+          // 是远程副本，直接创建Replica对象并添加到AR集合中，此Replica的log为null
           val remoteReplica = new Replica(replicaId, this, time)
           addReplicaIfNotExists(remoteReplica)
         }
+        // 返回对应的Replica
         getReplica(replicaId).get
     }
   }
 
   def getReplica(replicaId: Int = localBrokerId): Option[Replica] = {
+    // 从assignedReplicaMap集合中查找
     val replica = assignedReplicaMap.get(replicaId)
     if (replica == null)
       None
@@ -128,6 +156,7 @@ class Partition(val topic: String,
     }
   }
 
+  // 将Replica添加到assignedReplicaMap集合，键为Replica的brokerId
   def addReplicaIfNotExists(replica: Replica) = {
     assignedReplicaMap.putIfNotExists(replica.brokerId, replica)
   }
@@ -165,49 +194,72 @@ class Partition(val topic: String,
    * Make the local replica the leader by resetting LogEndOffset for remote replicas (there could be old LogEndOffset
    * from the time when this broker was the leader last time) and setting the new leader and ISR.
    * If the leader replica id does not change, return false to indicate the replica manager.
+    * 切换为Leader副本角色
    */
   def makeLeader(controllerId: Int, partitionStateInfo: PartitionState, correlationId: Int): Boolean = {
     val (leaderHWIncremented, isNewLeader) = inWriteLock(leaderIsrUpdateLock) {
+      // 获取需要分配的AR集合
       val allReplicas = partitionStateInfo.replicas.asScala.map(_.toInt)
       // record the epoch of the controller that made the leadership decision. This is useful while updating the isr
       // to maintain the decision maker controller's epoch in the zookeeper path
+      // 记录Controller的年代信息
       controllerEpoch = partitionStateInfo.controllerEpoch
       // add replicas that are new
+      // 1. 创建AR集合中所有副本对应的Replica对象（如果不存在该Replica）
       allReplicas.foreach(replica => getOrCreateReplica(replica))
+      // 2. 获取ISR集合
       val newInSyncReplicas = partitionStateInfo.isr.asScala.map(r => getOrCreateReplica(r)).toSet
       // remove assigned replicas that have been removed by the controller
+      // 3. 根据allReplicas更新assignedReplicas集合
       (assignedReplicas().map(_.brokerId) -- allReplicas).foreach(removeReplica(_))
-      inSyncReplicas = newInSyncReplicas
-      leaderEpoch = partitionStateInfo.leaderEpoch
-      zkVersion = partitionStateInfo.zkVersion
+      // 4. 更新Partition中的相关字段
+      inSyncReplicas = newInSyncReplicas // 更新ISR
+      leaderEpoch = partitionStateInfo.leaderEpoch // 更新Leader的年代信息
+      zkVersion = partitionStateInfo.zkVersion // 更新Zookeeper中的版本信息
+      // 5. 检测Leader是否发生变化
       val isNewLeader =
         if (leaderReplicaIdOpt.isDefined && leaderReplicaIdOpt.get == localBrokerId) {
+          // Leader所在的broker没有发生变化
           false
         } else {
+          // Leader之前并不在此broker上，表示Leader发生了变化，更新leaderReplicaIdOpt
           leaderReplicaIdOpt = Some(localBrokerId)
           true
         }
+      // 获取本地副本
       val leaderReplica = getReplica().get
       // we may need to increment high watermark since ISR could be down to 1
       if (isNewLeader) {
+        /**
+          * 6. 初始化Leader的highWatermarkMetadata
+          * 如果Leader副本发生了迁移，则表示Leader副本通过上面的步骤刚刚分配到此broker上
+          * 可能是刚启动，也可能是Follower副本成为Leader副本，此时需要更新leaderReplica的highWatermarkMetadata
+          * 由leaderReplica的convertHWToLocalOffsetMetadata()方法完成
+          */
         // construct the high watermark metadata for the new leader replica
         leaderReplica.convertHWToLocalOffsetMetadata()
         // reset log end offset for remote replicas
+        // 7. 重置所有远程副本的LEO为-1
         assignedReplicas.filter(_.brokerId != localBrokerId).foreach(_.updateLogReadResult(LogReadResult.UnknownLogReadResult))
       }
+      // 8. 尝试更新HighWatermark
       (maybeIncrementLeaderHW(leaderReplica), isNewLeader)
     }
     // some delayed operations may be unblocked after HW changed
     if (leaderHWIncremented)
+      // 如果HighWatermark被更新了，尝试执行DelayedFetch和DelayedProduce延迟任务
       tryCompleteDelayedRequests()
+    // 返回结果表示是否发生Leader迁移
     isNewLeader
   }
 
   /**
    *  Make the local replica the follower by setting the new leader and ISR to empty
    *  If the leader replica id does not change, return false to indicate the replica manager
+    *  切换为Follower副本角色
    */
   def makeFollower(controllerId: Int, partitionStateInfo: PartitionState, correlationId: Int): Boolean = {
+    // 加锁
     inWriteLock(leaderIsrUpdateLock) {
       val allReplicas = partitionStateInfo.replicas.asScala.map(_.toInt)
       val newLeaderBrokerId: Int = partitionStateInfo.leader
@@ -215,17 +267,22 @@ class Partition(val topic: String,
       // to maintain the decision maker controller's epoch in the zookeeper path
       controllerEpoch = partitionStateInfo.controllerEpoch
       // add replicas that are new
+      // 创建对应的Replica对象
       allReplicas.foreach(r => getOrCreateReplica(r))
       // remove assigned replicas that have been removed by the controller
+      // 根据partitionStateInfo信息更新AR集合
       (assignedReplicas().map(_.brokerId) -- allReplicas).foreach(removeReplica(_))
+      // ISR集合在Leader副本上维护，Follower副本上不维护，因此Follower副本上的ISR会置为空集合
       inSyncReplicas = Set.empty[Replica]
+      // 更新Leader年代信息
       leaderEpoch = partitionStateInfo.leaderEpoch
+      // 更新Zookeeper中的版本信息
       zkVersion = partitionStateInfo.zkVersion
-
+      // 检测Leader是否发生改变
       if (leaderReplicaIdOpt.isDefined && leaderReplicaIdOpt.get == newLeaderBrokerId) {
         false
-      }
-      else {
+      } else {
+        // 更新leaderReplicaIdOpt字段
         leaderReplicaIdOpt = Some(newLeaderBrokerId)
         true
       }
@@ -268,6 +325,7 @@ class Partition(val topic: String,
    * Check and maybe expand the ISR of the partition.
    *
    * This function can be triggered when a replica's LEO has incremented
+    * ISR集合扩充
    */
   def maybeExpandIsr(replicaId: Int) {
     val leaderHWIncremented = inWriteLock(leaderIsrUpdateLock) {
@@ -282,7 +340,7 @@ class Partition(val topic: String,
           /**
             * 同时满足以下三个条件则可以将当前副本添加到In-Sync集合中：
             * 1. 当前In-Sync集合不包含当前Replica副本；
-            * 2. 如果是指定的分区副本，需要判断当前副本是否是指定的分区副本之一；
+            * 2. 当前副本是否是assignedReplicas副本（AR）之一；
             * 3. 当前副本的LEO大于等于Leader副本的HighWatermark；
             */
           if(!inSyncReplicas.contains(replica) &&
@@ -319,6 +377,7 @@ class Partition(val topic: String,
    * and we are waiting for all replicas in ISR to be fully caught up to
    * the (local) leader's offset corresponding to this produce request
    * before we acknowledge the produce request.
+   * 检测HighWatermark线
    */
   def checkEnoughReplicasReachOffset(requiredOffset: Long): (Boolean, Short) = {
     leaderReplicaIfLocal() match {
@@ -419,21 +478,28 @@ class Partition(val topic: String,
     replicaManager.tryCompleteDelayedProduce(requestKey)
   }
 
+  // ISR集合缩减
   def maybeShrinkIsr(replicaMaxLagTimeMs: Long) {
+    // 加锁
     val leaderHWIncremented = inWriteLock(leaderIsrUpdateLock) {
+      // 获取Leader副本对应的Replica对象
       leaderReplicaIfLocal() match {
         case Some(leaderReplica) =>
+          // 找出滞后的Follower副本的集合
           val outOfSyncReplicas = getOutOfSyncReplicas(leaderReplica, replicaMaxLagTimeMs)
           if(outOfSyncReplicas.size > 0) {
+            // 从In-Sync副本集中减去滞后的副本
             val newInSyncReplicas = inSyncReplicas -- outOfSyncReplicas
             assert(newInSyncReplicas.size > 0)
             info("Shrinking ISR for partition [%s,%d] from %s to %s".format(topic, partitionId,
               inSyncReplicas.map(_.brokerId).mkString(","), newInSyncReplicas.map(_.brokerId).mkString(",")))
             // update ISR in zk and in cache
+            // 更新缓存及Zookeeper中的In-Sync信息
             updateIsr(newInSyncReplicas)
             // we may need to increment high watermark since ISR could be down to 1
 
             replicaManager.isrShrinkRate.mark()
+            // 因为更新了ISR，尝试更新Leader的HighWatermark
             maybeIncrementLeaderHW(leaderReplica)
           } else {
             false
@@ -444,25 +510,32 @@ class Partition(val topic: String,
     }
 
     // some delayed operations may be unblocked after HW changed
+    // 如果HighWatermark发生了更新，尝试完成时间轮中的DelayedProduce和DelayedFetch延迟操作
     if (leaderHWIncremented)
       tryCompleteDelayedRequests()
   }
 
+  // 获取同步状态滞后的副本集合
   def getOutOfSyncReplicas(leaderReplica: Replica, maxLagMs: Long): Set[Replica] = {
     /**
      * there are two cases that will be handled here -
      * 1. Stuck followers: If the leo of the replica hasn't been updated for maxLagMs ms,
      *                     the follower is stuck and should be removed from the ISR
+      *                     该副本的LEO长时间没有更新，表示该副本可能卡住了（Stuck）
      * 2. Slow followers: If the replica has not read up to the leo within the last maxLagMs ms,
      *                    then the follower is lagging and should be removed from the ISR
+      *                    该副本长时间没有读取到LEO的数据，表示该副本处于滞后状态
      * Both these cases are handled by checking the lastCaughtUpTimeMs which represents
      * the last time when the replica was fully caught up. If either of the above conditions
      * is violated, that replica is considered to be out of sync
      *
      **/
+    // Leader副本的LEO
     val leaderLogEndOffset = leaderReplica.logEndOffset
+    // Follower副本集合（即除开Leader副本）
     val candidateReplicas = inSyncReplicas - leaderReplica
 
+    // 从Follower副本集合中找出滞后的副本，通过当前时间距副本的lastCaughtUpTimeMs时间差与maxLagMs进行比较
     val laggingReplicas = candidateReplicas.filter(r => (time.milliseconds - r.lastCaughtUpTimeMs) > maxLagMs)
     if(laggingReplicas.size > 0)
       debug("Lagging replicas for partition %s are %s".format(TopicAndPartition(topic, partitionId), laggingReplicas.map(_.brokerId).mkString(",")))
@@ -470,11 +543,13 @@ class Partition(val topic: String,
     laggingReplicas
   }
 
+  // 向日志系统写入消息
   def appendMessagesToLeader(messages: ByteBufferMessageSet, requiredAcks: Int = 0) = {
     val (info, leaderHWIncremented) = inReadLock(leaderIsrUpdateLock) {
       /**
         * 检查当前分区是否就是Leader分区，内部根据ReplicaID是否与BrokerID相同来判断
         * 如果当前分区就是Leader分区就返回该分区副本（即Leader副本），否则返回None
+        * 只有Leader分区才可以处理读写请求，读写日志数据
         */
       val leaderReplicaOpt = leaderReplicaIfLocal()
       leaderReplicaOpt match {
@@ -525,6 +600,7 @@ class Partition(val topic: String,
 
     if(updateSucceeded) {
       replicaManager.recordIsrChange(new TopicAndPartition(topic, partitionId))
+      // 更新记录的ISR
       inSyncReplicas = newIsr
       zkVersion = newVersion
       trace("ISR updated to [%s] and zkVersion updated to [%d]".format(newIsr.mkString(","), zkVersion))
