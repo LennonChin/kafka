@@ -48,6 +48,7 @@ abstract class AbstractFetcherThread(name: String,
   type REQ <: FetchRequest
   type PD <: PartitionData
 
+  // 维护了TopicAndPartition与PartitionFetchState之间的对应关系，PartitionFetchState记录了对应分区的同步offset位置以及同步状态
   private val partitionMap = new mutable.HashMap[TopicAndPartition, PartitionFetchState] // a (topic, partition) -> partitionFetchState map
   private val partitionMapLock = new ReentrantLock
   private val partitionMapCond = partitionMapLock.newCondition()
@@ -62,6 +63,7 @@ abstract class AbstractFetcherThread(name: String,
   def processPartitionData(topicAndPartition: TopicAndPartition, fetchOffset: Long, partitionData: PD)
 
   // handle a partition whose offset is out of range and return a new fetch offset
+  // 处理offset越界的情况
   def handleOffsetOutOfRange(topicAndPartition: TopicAndPartition): Long
 
   // deal with partitions with errors, potentially due to leadership changes
@@ -85,25 +87,34 @@ abstract class AbstractFetcherThread(name: String,
 
   override def doWork() {
 
-    val fetchRequest = inLock(partitionMapLock) {
+    val fetchRequest = inLock(partitionMapLock) { // 加锁
+      // 创建FetchRequest
       val fetchRequest = buildFetchRequest(partitionMap)
       if (fetchRequest.isEmpty) {
         trace("There are no active partitions. Back off for %d ms before sending a fetch request".format(fetchBackOffMs))
+        // FetchRequest为空时，退避一段时间后重试
         partitionMapCond.await(fetchBackOffMs, TimeUnit.MILLISECONDS)
       }
       fetchRequest
     }
 
+    // FetchRequest不为空，发送并处理FetchRequest请求
     if (!fetchRequest.isEmpty)
       processFetchRequest(fetchRequest)
   }
 
   private def processFetchRequest(fetchRequest: REQ) {
+    // 创建一个集合记录出错的分区
     val partitionsWithError = new mutable.HashSet[TopicAndPartition]
+    // 记录响应数据的字典
     var responseData: Map[TopicAndPartition, PD] = Map.empty
 
     try {
       trace("Issuing to broker %d of fetch request %s".format(sourceBroker.id, fetchRequest))
+      /**
+        * 发送FetchRequest并等待FetchResponse，该方法是抽象方法，交由子类实现
+        * responseData用于记录返回的响应
+        */
       responseData = fetch(fetchRequest)
     } catch {
       case t: Throwable =>
@@ -112,36 +123,46 @@ abstract class AbstractFetcherThread(name: String,
           inLock(partitionMapLock) {
             partitionsWithError ++= partitionMap.keys
             // there is an error occurred while fetching partitions, sleep a while
+            // 出现异常，退避一段时间
             partitionMapCond.await(fetchBackOffMs, TimeUnit.MILLISECONDS)
           }
         }
     }
     fetcherStats.requestRate.mark()
 
-    if (responseData.nonEmpty) {
+    if (responseData.nonEmpty) { // 处理FetchResponse
       // process fetched data
-      inLock(partitionMapLock) {
-
+      inLock(partitionMapLock) { // 加锁
+        // 遍历responseData
         responseData.foreach { case (topicAndPartition, partitionData) =>
           val TopicAndPartition(topic, partitionId) = topicAndPartition
+          // 从partitionMap获取分区对应的PartitionFetchState
           partitionMap.get(topicAndPartition).foreach(currentPartitionFetchState =>
             // we append to the log if the current offset is defined and it is the same as the offset requested during fetch
+            // 该分区的offset没有发生变化
             if (fetchRequest.offset(topicAndPartition) == currentPartitionFetchState.offset) {
+              // 处理错误码
               Errors.forCode(partitionData.errorCode) match {
-                case Errors.NONE =>
+                case Errors.NONE => // 没有错误
                   try {
+                    // 获取返回的消息集合
                     val messages = partitionData.toByteBufferMessageSet
+                    // 有效的字节数
                     val validBytes = messages.validBytes
+                    // 获取返回的最后一条消息的offset
                     val newOffset = messages.shallowIterator.toSeq.lastOption match {
                       case Some(m: MessageAndOffset) => m.nextOffset
                       case None => currentPartitionFetchState.offset
                     }
+                    // 更新Fetch状态
                     partitionMap.put(topicAndPartition, new PartitionFetchState(newOffset))
                     fetcherLagStats.getAndMaybePut(topic, partitionId).lag = Math.max(0L, partitionData.highWatermark - newOffset)
                     fetcherStats.byteRate.mark(validBytes)
                     // Once we hand off the partition data to the subclass, we can't mess with it any more in this thread
+                    // 将从Leader副本获取的消息集合追加到Log中
                     processPartitionData(topicAndPartition, currentPartitionFetchState.offset, partitionData)
                   } catch {
+                    // 异常处理
                     case ime: CorruptRecordException =>
                       // we log the error and continue. This ensures two things
                       // 1. If there is a corrupt message in a topic partition, it does not bring the fetcher thread down and cause other topic partition to also lag
@@ -153,8 +174,11 @@ abstract class AbstractFetcherThread(name: String,
                         .format(topic, partitionId, currentPartitionFetchState.offset), e)
                   }
                 case Errors.OFFSET_OUT_OF_RANGE =>
+                  // 若Follower副本请求的offset超出了Leader的LEO，则返回该错误码
                   try {
+                    // 生成新的offset，handleOffsetOutOfRange()是抽象方法，交由子类实现
                     val newOffset = handleOffsetOutOfRange(topicAndPartition)
+                    // 更新Fetch状态
                     partitionMap.put(topicAndPartition, new PartitionFetchState(newOffset))
                     error("Current offset %d for partition [%s,%d] out of range; reset offset to %d"
                       .format(currentPartitionFetchState.offset, topic, partitionId, newOffset))
@@ -164,6 +188,7 @@ abstract class AbstractFetcherThread(name: String,
                       partitionsWithError += topicAndPartition
                   }
                 case _ =>
+                  // 返回其他错误码，则进行收集后，由handlePartitionsWithErrors()方法处理
                   if (isRunning.get) {
                     error("Error for partition [%s,%d] to broker %d:%s".format(topic, partitionId, sourceBroker.id,
                       partitionData.exception.get))
@@ -177,41 +202,51 @@ abstract class AbstractFetcherThread(name: String,
 
     if (partitionsWithError.nonEmpty) {
       debug("handling partitions with error for %s".format(partitionsWithError))
+      // 抽象方法
       handlePartitionsWithErrors(partitionsWithError)
     }
   }
 
   def addPartitions(partitionAndOffsets: Map[TopicAndPartition, Long]) {
-    partitionMapLock.lockInterruptibly()
+    partitionMapLock.lockInterruptibly() // 加锁
     try {
+      // 遍历以获取分区及对应的同步起始位置
       for ((topicAndPartition, offset) <- partitionAndOffsets) {
         // If the partitionMap already has the topic/partition, then do not update the map with the old offset
+        // 检测分区是否已经存在
         if (!partitionMap.contains(topicAndPartition))
+          // 如果不存在，添加对应的PartitionFetchState
           partitionMap.put(
             topicAndPartition,
+            // 当offset小于0时需要单独处理
             if (PartitionTopicInfo.isOffsetInvalid(offset)) new PartitionFetchState(handleOffsetOutOfRange(topicAndPartition))
             else new PartitionFetchState(offset)
           )}
+      // 唤醒当前Fetcher线程，进行同步操作
       partitionMapCond.signalAll()
     } finally partitionMapLock.unlock()
   }
 
   def delayPartitions(partitions: Iterable[TopicAndPartition], delay: Long) {
-    partitionMapLock.lockInterruptibly()
+    partitionMapLock.lockInterruptibly() // 加锁
     try {
       for (partition <- partitions) {
+        // 获取分区对应的PartitionFetchState
         partitionMap.get(partition).foreach (currentPartitionFetchState =>
-          if (currentPartitionFetchState.isActive)
+          if (currentPartitionFetchState.isActive) // 检测分区的同步状态
+            // 将分区对应的同步状态由激活状态设置为延时状态，延迟时长为delay毫秒
             partitionMap.put(partition, new PartitionFetchState(currentPartitionFetchState.offset, new DelayedItem(delay)))
         )
       }
+      // 唤醒fetcher线程
       partitionMapCond.signalAll()
     } finally partitionMapLock.unlock()
   }
 
   def removePartitions(topicAndPartitions: Set[TopicAndPartition]) {
-    partitionMapLock.lockInterruptibly()
+    partitionMapLock.lockInterruptibly() // 加锁
     try {
+      // 遍历以从partitionMap字典中移除
       topicAndPartitions.foreach { topicAndPartition =>
         partitionMap.remove(topicAndPartition)
         fetcherLagStats.unregister(topicAndPartition.topic, topicAndPartition.partition)

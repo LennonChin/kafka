@@ -56,10 +56,12 @@ class NetworkClientBlockingOps(val client: NetworkClient) extends AnyVal {
    */
   def blockingReady(node: Node, timeout: Long)(implicit time: JTime): Boolean = {
     require(timeout >=0, "timeout should be >= 0")
+    // ready()方法会在Node节点未准备好时尝试进行连接
     client.ready(node, time.milliseconds()) || pollUntil(timeout) { (_, now) =>
-      if (client.isReady(node, now))
+      if (client.isReady(node, now)) // 检测Node是否Ready
         true
       else if (client.connectionFailed(node))
+        // 抛出异常
         throw new IOException(s"Connection to $node failed")
       else false
     }
@@ -75,14 +77,16 @@ class NetworkClientBlockingOps(val client: NetworkClient) extends AnyVal {
    * care.
    */
   def blockingSendAndReceive(request: ClientRequest)(implicit time: JTime): ClientResponse = {
-    client.send(request, time.milliseconds())
+    client.send(request, time.milliseconds()) // 发送请求
 
     pollContinuously { responses =>
+      // 找到上面的发送请求对应的响应，根据请求和响应的correlationId进行匹配
       val response = responses.find { response =>
         response.request.request.header.correlationId == request.request.header.correlationId
       }
       response.foreach { r =>
         if (r.wasDisconnected) {
+          // 连接断开，抛出IOException异常
           val destination = request.request.destination
           throw new IOException(s"Connection to $destination was disconnected before the response was read")
         }
@@ -103,20 +107,27 @@ class NetworkClientBlockingOps(val client: NetworkClient) extends AnyVal {
    */
   private def pollUntil(timeout: Long)(predicate: (Seq[ClientResponse], Long) => Boolean)(implicit time: JTime): Boolean = {
     val methodStartTime = time.milliseconds()
+    // 计算超时时间
     val timeoutExpiryTime = methodStartTime + timeout
 
+    // 递归方法，有超时时间
     @tailrec
     def recursivePoll(iterationStartTime: Long): Boolean = {
+      // 剩余超时时间
       val pollTimeout = timeoutExpiryTime - iterationStartTime
+      // 发送请求
       val responses = client.poll(pollTimeout, iterationStartTime).asScala
+      // 检测是否满足递归结束条件
       if (predicate(responses, iterationStartTime)) true
       else {
         val afterPollTime = time.milliseconds()
+        // 未超时，继续进行递归操作
         if (afterPollTime < timeoutExpiryTime) recursivePoll(afterPollTime)
-        else false
+        else false // 超时返回
       }
     }
 
+    // 进入递归方法
     recursivePoll(methodStartTime)
   }
 
@@ -130,16 +141,20 @@ class NetworkClientBlockingOps(val client: NetworkClient) extends AnyVal {
     */
   private def pollContinuously[T](collect: Seq[ClientResponse] => Option[T])(implicit time: JTime): T = {
 
+    // 递归方法，没有超时时间
     @tailrec
     def recursivePoll: T = {
       // rely on request timeout to ensure we don't block forever
+      // poll操作发送请求，ClientRequest有超时时间，所以此处虽然超时时间是Long.MaxValue，但并不会永远阻塞
       val responses = client.poll(Long.MaxValue, time.milliseconds()).asScala
-      collect(responses) match {
+      collect(responses) match { // 检测是否满足递归结束条件
+        // 有结果，返回
         case Some(result) => result
+        // 没有结果，进行下一次递归
         case None => recursivePoll
       }
     }
-
+    // 进入递归方法
     recursivePoll
   }
 

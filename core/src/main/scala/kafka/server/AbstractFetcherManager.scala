@@ -30,6 +30,8 @@ import org.apache.kafka.common.utils.Utils
 abstract class AbstractFetcherManager(protected val name: String, clientId: String, numFetchers: Int = 1)
   extends Logging with KafkaMetricsGroup {
   // map of (source broker_id, fetcher_id per source broker) => fetcher
+  // 用于管理AbstractFetcherThread对象；
+  // BrokerAndFetcherId类型的键中封装了broker的网络位置信息（brokerId、host、port等）以及对应的Fetcher线程的ID
   private val fetcherThreadMap = new mutable.HashMap[BrokerAndFetcherId, AbstractFetcherThread]
   private val mapLock = new Object
   this.logIdent = "[" + name + "] "
@@ -72,19 +74,28 @@ abstract class AbstractFetcherManager(protected val name: String, clientId: Stri
   def createFetcherThread(fetcherId: Int, sourceBroker: BrokerEndPoint): AbstractFetcherThread
 
   def addFetcherForPartitions(partitionAndOffsets: Map[TopicAndPartition, BrokerAndInitialOffset]) {
-    mapLock synchronized {
+    mapLock synchronized { // 加锁
+      /**
+        * 对partitionAndOffsets根据构造的BrokerAndFetcherId为分组项进行分组
+        * 每个Fetcher线程只服务于一个broker，但可以为多个分区的Follower完成同步
+        */
       val partitionsPerFetcher = partitionAndOffsets.groupBy{ case(topicAndPartition, brokerAndInitialOffset) =>
         BrokerAndFetcherId(brokerAndInitialOffset.broker, getFetcherId(topicAndPartition.topic, topicAndPartition.partition))}
+      // 遍历得到的partitionsPerFetcher
       for ((brokerAndFetcherId, partitionAndOffsets) <- partitionsPerFetcher) {
         var fetcherThread: AbstractFetcherThread = null
+        // 根据brokerAndFetcherId取出对应的Fetcher线程，即每个broker应该有一个对应的Fetcher线程
         fetcherThreadMap.get(brokerAndFetcherId) match {
+          // 取到了就赋值给fetcherThread
           case Some(f) => fetcherThread = f
+          // 没取到，创建一个新的Fetcher线程，将其添加到fetcherThreadMap，并启动该线程
           case None =>
             fetcherThread = createFetcherThread(brokerAndFetcherId.fetcherId, brokerAndFetcherId.broker)
             fetcherThreadMap.put(brokerAndFetcherId, fetcherThread)
             fetcherThread.start
         }
 
+        // 将分区信息以及同步起始位置传递给Fetcher线程，并唤醒Fetcher线程，开始同步
         fetcherThreadMap(brokerAndFetcherId).addPartitions(partitionAndOffsets.map { case (topicAndPartition, brokerAndInitOffset) =>
           topicAndPartition -> brokerAndInitOffset.initOffset
         })
@@ -96,7 +107,7 @@ abstract class AbstractFetcherManager(protected val name: String, clientId: Stri
   }
 
   def removeFetcherForPartitions(partitions: Set[TopicAndPartition]) {
-    mapLock synchronized {
+    mapLock synchronized { // 加锁
       // 遍历fetcherThreadMap，移除对应的任务
       for ((key, fetcher) <- fetcherThreadMap) {
         fetcher.removePartitions(partitions)
@@ -106,14 +117,18 @@ abstract class AbstractFetcherManager(protected val name: String, clientId: Stri
   }
 
   def shutdownIdleFetcherThreads() {
-    mapLock synchronized {
+    mapLock synchronized { // 加锁
       val keysToBeRemoved = new mutable.HashSet[BrokerAndFetcherId]
+      // 遍历fetcherThreadMap
       for ((key, fetcher) <- fetcherThreadMap) {
+        // 如果Fetcher线程没有为任何Follower副本进行同步，就将其停止
         if (fetcher.partitionCount <= 0) {
           fetcher.shutdown()
+          // 记录停止Fetcher线程的broker
           keysToBeRemoved += key
         }
       }
+      // 从fetcherThreadMap中移除对应的记录
       fetcherThreadMap --= keysToBeRemoved
     }
   }

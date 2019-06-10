@@ -39,6 +39,15 @@ import org.apache.kafka.common.utils.Time
 import scala.collection.{JavaConverters, Map, mutable}
 import JavaConverters._
 
+/**
+  * @param name
+  * @param fetcherId
+  * @param sourceBroker
+  * @param brokerConfig
+  * @param replicaMgr
+  * @param metrics
+  * @param time
+  */
 class ReplicaFetcherThread(name: String,
                            fetcherId: Int,
                            sourceBroker: BrokerEndPoint,
@@ -110,26 +119,36 @@ class ReplicaFetcherThread(name: String,
   }
 
   // process fetched data
+  // 处理fetch()方法请求返回的数据
   def processPartitionData(topicAndPartition: TopicAndPartition, fetchOffset: Long, partitionData: PartitionData) {
     try {
       val TopicAndPartition(topic, partitionId) = topicAndPartition
+      // 获取对应的Replica副本对象
       val replica = replicaMgr.getReplica(topic, partitionId).get
+      // 获取响应的消息数据，转换为ByteBufferMessageSet
       val messageSet = partitionData.toByteBufferMessageSet
+      // 检查消息数据大小是否合法
       warnIfMessageOversized(messageSet, topicAndPartition)
 
+      // 检查拉取的offset是否是从副本的LEO开始的，如果不是将抛出异常
       if (fetchOffset != replica.logEndOffset.messageOffset)
         throw new RuntimeException("Offset mismatch for partition %s: fetched offset = %d, log end offset = %d.".format(topicAndPartition, fetchOffset, replica.logEndOffset.messageOffset))
+      // 日志记录
       if (logger.isTraceEnabled)
         trace("Follower %d has replica log end offset %d for partition %s. Received %d messages and leader hw %d"
           .format(replica.brokerId, replica.logEndOffset.messageOffset, topicAndPartition, messageSet.sizeInBytes, partitionData.highWatermark))
+      // 将消息追加到Log中，第二个参数为false，表示使用Leader已经为消息分配了offset，Follower副本不再对消息分配offset
       replica.log.get.append(messageSet, assignOffsets = false)
+      // 日志记录
       if (logger.isTraceEnabled)
         trace("Follower %d has replica log end offset %d after appending %d bytes of messages for partition %s"
           .format(replica.brokerId, replica.logEndOffset.messageOffset, messageSet.sizeInBytes, topicAndPartition))
+      // 计算副本的HighWatermark
       val followerHighWatermark = replica.logEndOffset.messageOffset.min(partitionData.highWatermark)
       // for the follower replica, we do not need to keep
       // its segment base offset the physical position,
       // these values will be computed upon making the leader
+      // 更新副本的HighWatermark
       replica.highWatermark = new LogOffsetMetadata(followerHighWatermark)
       if (logger.isTraceEnabled)
         trace("Follower %d set replica high watermark for partition [%s,%d] to %s"
@@ -151,8 +170,11 @@ class ReplicaFetcherThread(name: String,
 
   /**
    * Handle a partition whose offset is out of range and return a new fetch offset.
+    * handleOffsetOutOfRange()方法主要处理Follower副本请求的offset超出了Leader副本的offset范围，
+    * 可能是超过了Leader的LEO，也可能是小于Leader的最小offset（startOffset）
    */
   def handleOffsetOutOfRange(topicAndPartition: TopicAndPartition): Long = {
+    // 获取对应的Replica
     val replica = replicaMgr.getReplica(topicAndPartition.topic, topicAndPartition.partition).get
 
     /**
@@ -165,27 +187,32 @@ class ReplicaFetcherThread(name: String,
      *
      * There is a potential for a mismatch between the logs of the two replicas here. We don't fix this mismatch as of now.
      */
+    // 发送ListOffsetRequest，获取Leader副本的LEO，使用的是阻塞的方式
     val leaderEndOffset: Long = earliestOrLatestOffset(topicAndPartition, ListOffsetRequest.LATEST_TIMESTAMP,
       brokerConfig.brokerId)
 
-    if (leaderEndOffset < replica.logEndOffset.messageOffset) {
+    // 判断Leader副本的LEO是否依然落后于Follower副本的LEO
+    if (leaderEndOffset < replica.logEndOffset.messageOffset) { // Leader副本的LEO落后于Follower副本的LEO
       // Prior to truncating the follower's log, ensure that doing so is not disallowed by the configuration for unclean leader election.
       // This situation could only happen if the unclean election configuration for a topic changes while a replica is down. Otherwise,
       // we should never encounter this situation since a non-ISR leader cannot be elected if disallowed by the broker configuration.
+      // 根据配置决定是否需要停机
       if (!LogConfig.fromProps(brokerConfig.originals, AdminUtils.fetchEntityConfig(replicaMgr.zkUtils,
-        ConfigType.Topic, topicAndPartition.topic)).uncleanLeaderElectionEnable) {
+        ConfigType.Topic, topicAndPartition.topic)).uncleanLeaderElectionEnable) { // unclean.leader.election.enable配置
         // Log a fatal error and shutdown the broker to ensure that data loss does not unexpectedly occur.
         fatal("Exiting because log truncation is not allowed for topic %s,".format(topicAndPartition.topic) +
           " Current leader %d's latest offset %d is less than replica %d's latest offset %d"
           .format(sourceBroker.id, leaderEndOffset, brokerConfig.brokerId, replica.logEndOffset.messageOffset))
+        // 退出JVM
         System.exit(1)
       }
 
       warn("Replica %d for partition %s reset its fetch offset from %d to current leader %d's latest offset %d"
         .format(brokerConfig.brokerId, topicAndPartition, replica.logEndOffset.messageOffset, sourceBroker.id, leaderEndOffset))
+      // 将分区对应的Log截断到Leader副本的LEO的位置，之后从此offset开始重新与Leader进行同步
       replicaMgr.logManager.truncateTo(Map(topicAndPartition -> leaderEndOffset))
       leaderEndOffset
-    } else {
+    } else { // Leader副本的LEO没有落后于Follower副本的LEO，但可能是Leader副本中的startOffset（第一条消息的offset）大于Follower副本的LEO
       /**
        * If the leader's log end offset is greater than the follower's log end offset, there are two possibilities:
        * 1. The follower could have been down for a long time and when it starts up, its end offset could be smaller than the leader's
@@ -208,15 +235,18 @@ class ReplicaFetcherThread(name: String,
        * and the current leader's log start offset.
        *
        */
+      // 发送ListOffsetRequest，获取Leader副本的startOffset，使用的是阻塞的方式
       val leaderStartOffset: Long = earliestOrLatestOffset(topicAndPartition, ListOffsetRequest.EARLIEST_TIMESTAMP,
         brokerConfig.brokerId)
       warn("Replica %d for partition %s reset its fetch offset from %d to current leader %d's start offset %d"
         .format(brokerConfig.brokerId, topicAndPartition, replica.logEndOffset.messageOffset, sourceBroker.id, leaderStartOffset))
+      // 选择下次获取消息的起始offset
       val offsetToFetch = Math.max(leaderStartOffset, replica.logEndOffset.messageOffset)
       // Only truncate log when current leader's log start offset is greater than follower's log end offset.
       if (leaderStartOffset > replica.logEndOffset.messageOffset)
+        // 将Log全部截断，并创建新的activeSegment
         replicaMgr.logManager.truncateFullyAndStartAt(topicAndPartition, leaderStartOffset)
-      offsetToFetch
+      offsetToFetch // 返回下次获取消息的offset
     }
   }
 
@@ -226,7 +256,9 @@ class ReplicaFetcherThread(name: String,
   }
 
   protected def fetch(fetchRequest: FetchRequest): Map[TopicAndPartition, PartitionData] = {
+    // 发送请求
     val clientResponse = sendRequest(ApiKeys.FETCH, Some(fetchRequestVersion), fetchRequest.underlying)
+    // 根据请求返回的数据构造FetchResponse响应对象
     new FetchResponse(clientResponse.responseBody).responseData.asScala.map { case (key, value) =>
       TopicAndPartition(key.topic, key.partition) -> new PartitionData(value)
     }
@@ -234,17 +266,23 @@ class ReplicaFetcherThread(name: String,
 
   private def sendRequest(apiKey: ApiKeys, apiVersion: Option[Short], request: AbstractRequest): ClientResponse = {
     import kafka.utils.NetworkClientBlockingOps._
+    // 构造请求头
     val header = apiVersion.fold(networkClient.nextRequestHeader(apiKey))(networkClient.nextRequestHeader(apiKey, _))
     try {
+      // 阻塞等待Node的状态变为Ready，超时会抛出异常
       if (!networkClient.blockingReady(sourceNode, socketTimeout)(time))
         throw new SocketTimeoutException(s"Failed to connect within $socketTimeout ms")
       else {
+        // 构造RequestSend对象
         val send = new RequestSend(sourceBroker.id.toString, header, request.toStruct)
+        // 构造ClientRequest对象
         val clientRequest = new ClientRequest(time.milliseconds(), true, send, null)
+        // 发送请求并阻塞等待响应
         networkClient.blockingSendAndReceive(clientRequest)(time)
       }
     }
     catch {
+      // 异常处理
       case e: Throwable =>
         networkClient.close(sourceBroker.id.toString)
         throw e
@@ -267,14 +305,18 @@ class ReplicaFetcherThread(name: String,
     }
   }
 
+  // 构造FetchRequest请求
   protected def buildFetchRequest(partitionMap: Map[TopicAndPartition, PartitionFetchState]): FetchRequest = {
+    // 定义一个字典用于存放定义的请求
     val requestMap = mutable.Map.empty[TopicPartition, JFetchRequest.PartitionData]
 
     partitionMap.foreach { case ((TopicAndPartition(topic, partition), partitionFetchState)) =>
-      if (partitionFetchState.isActive)
+      if (partitionFetchState.isActive) // 检测分区的同步状态是否为激活状态
+        // 为每个分区构造请求对象
         requestMap(new TopicPartition(topic, partition)) = new JFetchRequest.PartitionData(partitionFetchState.offset, fetchSize)
     }
 
+    // 构造一个FetchRequest请求对象并返回
     new FetchRequest(new JFetchRequest(replicaId, maxWait, minBytes, requestMap.asJava))
   }
 
