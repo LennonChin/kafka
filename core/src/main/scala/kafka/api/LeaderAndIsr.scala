@@ -55,17 +55,17 @@ object PartitionStateInfo {
   }
 }
 
-case class PartitionStateInfo(leaderIsrAndControllerEpoch: LeaderIsrAndControllerEpoch,
-                              allReplicas: Set[Int]) {
+case class PartitionStateInfo(leaderIsrAndControllerEpoch: LeaderIsrAndControllerEpoch, // ISR及Controller年代
+                              allReplicas: Set[Int]) { // AR集合
   def replicationFactor = allReplicas.size
 
   def writeTo(buffer: ByteBuffer) {
-    buffer.putInt(leaderIsrAndControllerEpoch.controllerEpoch)
-    buffer.putInt(leaderIsrAndControllerEpoch.leaderAndIsr.leader)
-    buffer.putInt(leaderIsrAndControllerEpoch.leaderAndIsr.leaderEpoch)
-    buffer.putInt(leaderIsrAndControllerEpoch.leaderAndIsr.isr.size)
-    leaderIsrAndControllerEpoch.leaderAndIsr.isr.foreach(buffer.putInt(_))
-    buffer.putInt(leaderIsrAndControllerEpoch.leaderAndIsr.zkVersion)
+    buffer.putInt(leaderIsrAndControllerEpoch.controllerEpoch) // Controller年代
+    buffer.putInt(leaderIsrAndControllerEpoch.leaderAndIsr.leader) // Leader
+    buffer.putInt(leaderIsrAndControllerEpoch.leaderAndIsr.leaderEpoch) // Leader年代
+    buffer.putInt(leaderIsrAndControllerEpoch.leaderAndIsr.isr.size) // ISR大小
+    leaderIsrAndControllerEpoch.leaderAndIsr.isr.foreach(buffer.putInt(_)) // ISR
+    buffer.putInt(leaderIsrAndControllerEpoch.leaderAndIsr.zkVersion) // Zookeeper版本信息
     buffer.putInt(replicationFactor)
     allReplicas.foreach(buffer.putInt(_))
   }

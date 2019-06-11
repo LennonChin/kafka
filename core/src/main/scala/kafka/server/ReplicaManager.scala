@@ -181,13 +181,16 @@ class ReplicaManager(val config: KafkaConfig,
   }
 
   def startHighWaterMarksCheckPointThread() = {
-    if(highWatermarkCheckPointThreadStarted.compareAndSet(false, true))
+    if(highWatermarkCheckPointThreadStarted.compareAndSet(false, true)) // 检测HighWatermark Checkpoint任务是否启动
+      // 启动HighWatermark Checkpoint任务
       scheduler.schedule("highwatermark-checkpoint", checkpointHighWatermarks, period = config.replicaHighWatermarkCheckpointIntervalMs, unit = TimeUnit.MILLISECONDS)
   }
 
   def recordIsrChange(topicAndPartition: TopicAndPartition) {
-    isrChangeSet synchronized {
+    isrChangeSet synchronized { // 加锁
+      // 添加到isrChangeSet
       isrChangeSet += topicAndPartition
+      // 记录最后的更新时间
       lastIsrChangeMs.set(System.currentTimeMillis())
     }
   }
@@ -200,12 +203,21 @@ class ReplicaManager(val config: KafkaConfig,
    */
   def maybePropagateIsrChanges() {
     val now = System.currentTimeMillis()
-    isrChangeSet synchronized {
+    isrChangeSet synchronized { // 加锁
+      /**
+        * 检查是否需要执行定时任务
+        * 1. isrChangeSet不为空；
+        * 2. 最后一次有ISR集合发生变化的时间距今已超过5秒；
+        * 3. 上次写入Zookeeper的时间距今已超过60秒。
+        */
       if (isrChangeSet.nonEmpty &&
         (lastIsrChangeMs.get() + ReplicaManager.IsrChangePropagationBlackOut < now ||
           lastIsrPropagationMs.get() + ReplicaManager.IsrChangePropagationInterval < now)) {
+        // 将isrChangeSet写入Zookeeper
         ReplicationUtils.propagateIsrChanges(zkUtils, isrChangeSet)
+        // 清空isrChangeSet
         isrChangeSet.clear()
+        // 更新lastIsrPropagationMs
         lastIsrPropagationMs.set(now)
       }
     }
@@ -239,31 +251,39 @@ class ReplicaManager(val config: KafkaConfig,
 
   def startup() {
     // start ISR expiration thread
+    // ISR Expiration定时任务
     scheduler.schedule("isr-expiration", maybeShrinkIsr, period = config.replicaLagTimeMaxMs, unit = TimeUnit.MILLISECONDS)
+    // ISR Change Propagation定时任务
     scheduler.schedule("isr-change-propagation", maybePropagateIsrChanges, period = 2500L, unit = TimeUnit.MILLISECONDS)
   }
 
   def stopReplica(topic: String, partitionId: Int, deletePartition: Boolean): Short  = {
     stateChangeLogger.trace("Broker %d handling stop replica (delete=%s) for partition [%s,%d]".format(localBrokerId,
       deletePartition.toString, topic, partitionId))
+    // 先记录错误码为NONE
     val errorCode = Errors.NONE.code
+    // 从allPartitions获取分区进行操作
     getPartition(topic, partitionId) match {
+      // 有对应的分区
       case Some(partition) =>
-        if(deletePartition) {
+        if(deletePartition) { // deletePartition标识了是否需要删除分区，会删除分区对应的副本及其Log
+          // 从allPartitions中移除对应分区
           val removedPartition = allPartitions.remove((topic, partitionId))
           if (removedPartition != null) {
+            // 删除副本
             removedPartition.delete() // this will delete the local log
             val topicHasPartitions = allPartitions.keys.exists { case (t, _) => topic == t }
             if (!topicHasPartitions)
                 BrokerTopicStats.removeMetrics(topic)
           }
         }
+      // 没有对应的分区，可以直接删除Log
       case None =>
         // Delete log and corresponding folders in case replica manager doesn't hold them anymore.
         // This could happen when topic is being deleted while broker is down and recovers.
         if(deletePartition) {
           val topicAndPartition = TopicAndPartition(topic, partitionId)
-
+          // 使用LogManager中删除对应的Log
           if(logManager.getLog(topicAndPartition).isDefined) {
               logManager.deleteLog(topicAndPartition)
           }
@@ -277,19 +297,26 @@ class ReplicaManager(val config: KafkaConfig,
   }
 
   def stopReplicas(stopReplicaRequest: StopReplicaRequest): (mutable.Map[TopicPartition, Short], Short) = {
-    replicaStateChangeLock synchronized {
+    replicaStateChangeLock synchronized { // 加锁
+      // 构造字典，用于存放每个分区的响应结果
       val responseMap = new collection.mutable.HashMap[TopicPartition, Short]
-      if(stopReplicaRequest.controllerEpoch() < controllerEpoch) {
+      if(stopReplicaRequest.controllerEpoch() < controllerEpoch) {  // 检查Controller的年代信息是否合法
         stateChangeLogger.warn("Broker %d received stop replica request from an old controller epoch %d. Latest known controller epoch is %d"
           .format(localBrokerId, stopReplicaRequest.controllerEpoch, controllerEpoch))
+        // 返回年代信息过期的错误
         (responseMap, Errors.STALE_CONTROLLER_EPOCH.code)
       } else {
+        // 从请求中得到操作的分区
         val partitions = stopReplicaRequest.partitions.asScala
+        // 更新年代信息
         controllerEpoch = stopReplicaRequest.controllerEpoch
         // First stop fetchers for all partitions, then stop the corresponding replicas
+        // 停止对指定分区的拉取操作
         replicaFetcherManager.removeFetcherForPartitions(partitions.map(r => TopicAndPartition(r.topic, r.partition)))
         for(topicPartition <- partitions){
+          // 使用stopReplica()方法关闭指定的分区的副本
           val errorCode = stopReplica(topicPartition.topic, topicPartition.partition, stopReplicaRequest.deletePartitions)
+          // 向responseMap记录错误码
           responseMap.put(topicPartition, errorCode)
         }
         (responseMap, Errors.NONE.code)
@@ -663,16 +690,19 @@ class ReplicaManager(val config: KafkaConfig,
     }
 
   def maybeUpdateMetadataCache(correlationId: Int, updateMetadataRequest: UpdateMetadataRequest, metadataCache: MetadataCache) {
-    replicaStateChangeLock synchronized {
-      if(updateMetadataRequest.controllerEpoch < controllerEpoch) {
+    replicaStateChangeLock synchronized { // 加锁
+      if(updateMetadataRequest.controllerEpoch < controllerEpoch) { // 检查Controller年代信息
         val stateControllerEpochErrorMessage = ("Broker %d received update metadata request with correlation id %d from an " +
           "old controller %d with epoch %d. Latest known controller epoch is %d").format(localBrokerId,
           correlationId, updateMetadataRequest.controllerId, updateMetadataRequest.controllerEpoch,
           controllerEpoch)
         stateChangeLogger.warn(stateControllerEpochErrorMessage)
+        // 抛出年代信息过期的异常
         throw new ControllerMovedException(stateControllerEpochErrorMessage)
       } else {
+        // 使用MetadataCache更新
         metadataCache.updateCache(correlationId, updateMetadataRequest)
+        // 更新Controller年代信息
         controllerEpoch = updateMetadataRequest.controllerEpoch
       }
     }
@@ -996,6 +1026,7 @@ class ReplicaManager(val config: KafkaConfig,
 
   private def maybeShrinkIsr(): Unit = {
     trace("Evaluating ISR list of partitions to see which replicas can be removed from the ISR")
+    // 尝试对ISR进行紧缩操作，使用的是Partition的maybeShrinkIsr()方法
     allPartitions.values.foreach(partition => partition.maybeShrinkIsr(config.replicaLagTimeMaxMs))
   }
 
@@ -1028,11 +1059,15 @@ class ReplicaManager(val config: KafkaConfig,
 
   // Flushes the highwatermark value for all partitions to the highwatermark file
   def checkpointHighWatermarks() {
+    // 获取全部的Replica对象，按照副本所在的数据目录进行分组
     val replicas = allPartitions.values.flatMap(_.getReplica(config.brokerId))
     val replicasByDir = replicas.filter(_.log.isDefined).groupBy(_.log.get.dir.getParentFile.getAbsolutePath)
+    // 遍历所有的数据目录
     for ((dir, reps) <- replicasByDir) {
+      // 收集当前数据目录下的全部副本的HighWatermark
       val hwms = reps.map(r => new TopicAndPartition(r) -> r.highWatermark.messageOffset).toMap
       try {
+        // 更新对应数据目录下的replication-offset-checkpoint文件
         highWatermarkCheckpoints(dir).write(hwms)
       } catch {
         case e: IOException =>
@@ -1049,6 +1084,7 @@ class ReplicaManager(val config: KafkaConfig,
     delayedFetchPurgatory.shutdown()
     delayedProducePurgatory.shutdown()
     if (checkpointHW)
+      // 在关闭时会需要进行一次HighWatermark的Checkpoint
       checkpointHighWatermarks()
     info("Shut down completely")
   }

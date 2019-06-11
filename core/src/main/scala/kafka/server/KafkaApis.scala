@@ -77,10 +77,10 @@ class KafkaApis(val requestChannel: RequestChannel,
         case ApiKeys.PRODUCE => handleProducerRequest(request) // 生产
         case ApiKeys.FETCH => handleFetchRequest(request) // 拉取
         case ApiKeys.LIST_OFFSETS => handleOffsetRequest(request) // 获取offsets
-        case ApiKeys.METADATA => handleTopicMetadataRequest(request) // 获取原数据
+        case ApiKeys.METADATA => handleTopicMetadataRequest(request) // 获取元数据（由生产者或消费者客户端向服务端获取集群元数据）
         case ApiKeys.LEADER_AND_ISR => handleLeaderAndIsrRequest(request) // 操作Leader及ISR信息
-        case ApiKeys.STOP_REPLICA => handleStopReplicaRequest(request) // 停止副本
-        case ApiKeys.UPDATE_METADATA_KEY => handleUpdateMetadataRequest(request) // 更新原数据
+        case ApiKeys.STOP_REPLICA => handleStopReplicaRequest(request) // 停止副本，可能会删除副本
+        case ApiKeys.UPDATE_METADATA_KEY => handleUpdateMetadataRequest(request) // 更新元数据（由KafkaController要求Broker更新）
         case ApiKeys.CONTROLLED_SHUTDOWN_KEY => handleControlledShutdownRequest(request)
         case ApiKeys.OFFSET_COMMIT => handleOffsetCommitRequest(request) // 提交offset
         case ApiKeys.OFFSET_FETCH => handleOffsetFetchRequest(request) // 获取offset
@@ -172,35 +172,49 @@ class KafkaApis(val requestChannel: RequestChannel,
     // ensureTopicExists is only for client facing requests
     // We can't have the ensureTopicExists check here since the controller sends it as an advisory to all brokers so they
     // stop serving data to clients for the topic being deleted
+    // 把请求转换为StopReplicaRequest
     val stopReplicaRequest = request.body.asInstanceOf[StopReplicaRequest]
 
+    // 构造响应头
     val responseHeader = new ResponseHeader(request.header.correlationId)
     val response =
-      if (authorize(request.session, ClusterAction, Resource.ClusterResource)) {
+      if (authorize(request.session, ClusterAction, Resource.ClusterResource)) { // 检查授权
+        // 使用ReplicaManager处理请求
         val (result, error) = replicaManager.stopReplicas(stopReplicaRequest)
+        // 构造StopReplicaResponse响应对象
         new StopReplicaResponse(error, result.asInstanceOf[Map[TopicPartition, JShort]].asJava)
       } else {
+        // 授权失败，将响应结果中的分区的错误码设置为CLUSTER_AUTHORIZATION_FAILED
         val result = stopReplicaRequest.partitions.asScala.map((_, new JShort(Errors.CLUSTER_AUTHORIZATION_FAILED.code))).toMap
         new StopReplicaResponse(Errors.CLUSTER_AUTHORIZATION_FAILED.code, result.asJava)
       }
 
+    // 使用RequestChannel发送响应
     requestChannel.sendResponse(new RequestChannel.Response(request, new ResponseSend(request.connectionId, responseHeader, response)))
+    // 停止空闲的副本同步线程
     replicaManager.replicaFetcherManager.shutdownIdleFetcherThreads()
   }
 
   def handleUpdateMetadataRequest(request: RequestChannel.Request) {
+    // 请求关联ID
     val correlationId = request.header.correlationId
+    // 将请求转换为UpdateMetadataRequest
     val updateMetadataRequest = request.body.asInstanceOf[UpdateMetadataRequest]
 
     val updateMetadataResponse =
-      if (authorize(request.session, ClusterAction, Resource.ClusterResource)) {
+      if (authorize(request.session, ClusterAction, Resource.ClusterResource)) { // 检查授权
+        // 使用ReplicaManager更新
         replicaManager.maybeUpdateMetadataCache(correlationId, updateMetadataRequest, metadataCache)
+        // 构造错误码为NONE的响应
         new UpdateMetadataResponse(Errors.NONE.code)
       } else {
+        // 未授权，直接返回错误码为CLUSTER_AUTHORIZATION_FAILED的响应
         new UpdateMetadataResponse(Errors.CLUSTER_AUTHORIZATION_FAILED.code)
       }
 
+    // 构造响应头
     val responseHeader = new ResponseHeader(correlationId)
+    // 使用RequestChannel发送请求
     requestChannel.sendResponse(new Response(request, new ResponseSend(request.connectionId, responseHeader, updateMetadataResponse)))
   }
 
@@ -707,7 +721,9 @@ class KafkaApis(val requestChannel: RequestChannel,
     topicMetadata.headOption.getOrElse(createGroupMetadataTopic())
   }
 
+  // 获取指定主题集合的元数据
   private def getTopicMetadata(topics: Set[String], securityProtocol: SecurityProtocol, errorUnavailableEndpoints: Boolean): Seq[MetadataResponse.TopicMetadata] = {
+    // 通过MetadataCache获取主题元数据
     val topicResponses = metadataCache.getTopicMetadata(topics, securityProtocol, errorUnavailableEndpoints)
     if (topics.isEmpty || topicResponses.size == topics.size) {
       topicResponses
@@ -731,30 +747,41 @@ class KafkaApis(val requestChannel: RequestChannel,
    * Handle a topic metadata request
    */
   def handleTopicMetadataRequest(request: RequestChannel.Request) {
+    // 转换请求为MetadataRequest
     val metadataRequest = request.body.asInstanceOf[MetadataRequest]
+    // 获取API版本
     val requestVersion = request.header.apiVersion()
 
     val topics =
       // Handle old metadata request logic. Version 0 has no way to specify "no topics".
       if (requestVersion == 0) {
+        // 请求的topics字段为空
         if (metadataRequest.topics() == null || metadataRequest.topics().isEmpty)
+          // 则读取所有的Topic信息
           metadataCache.getAllTopics()
         else
+          // 否则从请求中得到需要获取信息的Topic
           metadataRequest.topics.asScala.toSet
       } else {
-        if (metadataRequest.isAllTopics)
+        if (metadataRequest.isAllTopics) // 内部实现为topics == null，即所请求的topics字段为空
+          // 则读取所有的Topic信息
           metadataCache.getAllTopics()
         else
+          // 否则从请求中得到需要获取信息的Topic
           metadataRequest.topics.asScala.toSet
       }
 
+    // 授权验证，将主题分为授权主题和未授权主题
     var (authorizedTopics, unauthorizedTopics) =
       topics.partition(topic => authorize(request.session, Describe, new Resource(Topic, topic)))
 
     if (authorizedTopics.nonEmpty) {
+      // 过滤出元数据中没有的已授权的主题
       val nonExistingTopics = metadataCache.getNonExistingTopics(authorizedTopics)
+      // 如果开启了自动创建主题
       if (config.autoCreateTopicsEnable && nonExistingTopics.nonEmpty) {
         authorizer.foreach { az =>
+          // 验证授权，授权不通过就将这些主题从授权集合移动到未授权集合
           if (!az.authorize(request.session, Create, Resource.ClusterResource)) {
             authorizedTopics --= nonExistingTopics
             unauthorizedTopics ++= nonExistingTopics
@@ -763,34 +790,46 @@ class KafkaApis(val requestChannel: RequestChannel,
       }
     }
 
+    // 对未授权的主题统一构建带有TOPIC_AUTHORIZATION_FAILED错误码的TopicMetadata对象
     val unauthorizedTopicMetadata = unauthorizedTopics.map(topic =>
       new MetadataResponse.TopicMetadata(Errors.TOPIC_AUTHORIZATION_FAILED, topic, common.Topic.isInternal(topic),
         java.util.Collections.emptyList()))
 
     // In version 0, we returned an error when brokers with replicas were unavailable,
     // while in higher versions we simply don't include the broker in the returned broker list
+    /**
+      * 根据请求版本决定是否要对副本不可用的broker返回错误
+      * 1. 在版本0中，副本不可用的broker会返回错误；
+      * 2. 高版本中仅仅会在返回的broker列表中去除副本不可用的broker，但不会返回错误
+      */
     val errorUnavailableEndpoints = requestVersion == 0
     val topicMetadata =
       if (authorizedTopics.isEmpty)
+        // 如果已授权主题集合为空，返回空字典
         Seq.empty[MetadataResponse.TopicMetadata]
       else
+        // 否则获取已授权主题的元数据
         getTopicMetadata(authorizedTopics, request.securityProtocol, errorUnavailableEndpoints)
 
     val completeTopicMetadata = topicMetadata ++ unauthorizedTopicMetadata
 
+    // 获取可用broker
     val brokers = metadataCache.getAliveBrokers
 
     trace("Sending topic metadata %s and brokers %s for correlation id %d to client %s".format(completeTopicMetadata.mkString(","),
       brokers.mkString(","), request.header.correlationId, request.header.clientId))
 
+    // 创建与Request关联的响应头
     val responseHeader = new ResponseHeader(request.header.correlationId)
 
+    // 创建响应体
     val responseBody = new MetadataResponse(
       brokers.map(_.getNode(request.securityProtocol)).asJava,
       metadataCache.getControllerId.getOrElse(MetadataResponse.NO_CONTROLLER_ID),
       completeTopicMetadata.asJava,
       requestVersion
     )
+    // 使用RequestChannel返回响应
     requestChannel.sendResponse(new RequestChannel.Response(request, new ResponseSend(request.connectionId, responseHeader, responseBody)))
   }
 
