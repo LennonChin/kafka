@@ -47,7 +47,9 @@ class Replica(val brokerId: Int,
     */
   @volatile private[this] var logEndOffsetMetadata: LogOffsetMetadata = LogOffsetMetadata.UnknownOffsetMetadata
 
+  // 副本所属的主题
   val topic = partition.topic
+  // 副本所属的分区的ID
   val partitionId = partition.partitionId
 
   // 是否是本地副本，根据log字段是否为null来判断

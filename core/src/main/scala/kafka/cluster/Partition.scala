@@ -75,6 +75,7 @@ class Partition(val topic: String,
   private var controllerEpoch: Int = KafkaController.InitialControllerEpoch - 1
   this.logIdent = "Partition [%s,%d] on broker %d: ".format(topic, partitionId, localBrokerId)
 
+  // 根据replicaId判断指定副本是否是本地副本，replicaId与brokerId相同说明是本地副本
   private def isReplicaLocal(replicaId: Int) : Boolean = (replicaId == localBrokerId)
   val tags = Map("topic" -> topic, "partition" -> partitionId.toString)
 
@@ -87,9 +88,11 @@ class Partition(val topic: String,
     tags
   )
 
+  // 当前分区是否使用了副本
   def isUnderReplicated(): Boolean = {
     leaderReplicaIfLocal() match {
-      case Some(_) =>
+      case Some(_) => // 获取到了Leader副本
+        // 因为Leader副本存在，如果此时ISR小于AR说明至少存在两个副本，即当前分区使用了副本
         inSyncReplicas.size < assignedReplicas.size
       case None =>
         false
@@ -134,8 +137,9 @@ class Partition(val topic: String,
     }
   }
 
+  // 根据replicaId从AR集合中获取分区对象
   def getReplica(replicaId: Int = localBrokerId): Option[Replica] = {
-    // 从assignedReplicaMap集合中查找
+    // 从assignedReplicaMap集合（AR集合）中查找
     val replica = assignedReplicaMap.get(replicaId)
     if (replica == null)
       None
@@ -143,10 +147,11 @@ class Partition(val topic: String,
       Some(replica)
   }
 
+  // 判断Leader副本是否在当前分区所在的broker上，如果在就获取表示Leader副本的Replica对象
   def leaderReplicaIfLocal(): Option[Replica] = {
     leaderReplicaIdOpt match {
       case Some(leaderReplicaId) =>
-        // leaderReplicaId与localBrokerId相同说明是Leader
+        // Leader副本存在于当前分区所在的broker上
         if (leaderReplicaId == localBrokerId)
           // 获取对应的Replica
           getReplica(localBrokerId)
@@ -161,21 +166,28 @@ class Partition(val topic: String,
     assignedReplicaMap.putIfNotExists(replica.brokerId, replica)
   }
 
+  // 获取AR集合中的所有Replica对象
   def assignedReplicas(): Set[Replica] = {
     assignedReplicaMap.values.toSet
   }
 
+  // 根据replicaId从AR集合中移除指定的Replica对象
   def removeReplica(replicaId: Int) {
     assignedReplicaMap.remove(replicaId)
   }
 
+  // 删除当前分区
   def delete() {
     // need to hold the lock to prevent appendMessagesToLeader() from hitting I/O exceptions due to log being deleted
-    inWriteLock(leaderIsrUpdateLock) {
+    inWriteLock(leaderIsrUpdateLock) { // 加锁
+      // 将AR集合清空
       assignedReplicaMap.clear()
+      // 将IST集合置为空集合
       inSyncReplicas = Set.empty[Replica]
+      // 将Leader副本置为NONE
       leaderReplicaIdOpt = None
       try {
+        // 使用LogManager将分区对应的数据删除
         logManager.deleteLog(TopicAndPartition(topic, partitionId))
         removePartitionMetrics()
       } catch {
@@ -186,6 +198,7 @@ class Partition(val topic: String,
     }
   }
 
+  // 获取Leader年代信息
   def getLeaderEpoch(): Int = {
     return this.leaderEpoch
   }
@@ -599,6 +612,7 @@ class Partition(val topic: String,
       newLeaderAndIsr, controllerEpoch, zkVersion)
 
     if(updateSucceeded) {
+      // 使用ReplicaManager记录ISR的更新
       replicaManager.recordIsrChange(new TopicAndPartition(topic, partitionId))
       // 更新记录的ISR
       inSyncReplicas = newIsr
