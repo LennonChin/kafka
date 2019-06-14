@@ -211,11 +211,11 @@ class Partition(val topic: String,
    */
   def makeLeader(controllerId: Int, partitionStateInfo: PartitionState, correlationId: Int): Boolean = {
     val (leaderHWIncremented, isNewLeader) = inWriteLock(leaderIsrUpdateLock) {
-      // 获取需要分配的AR集合
+      // 从partitionStateInfo参数中获取需要分配的AR集合
       val allReplicas = partitionStateInfo.replicas.asScala.map(_.toInt)
       // record the epoch of the controller that made the leadership decision. This is useful while updating the isr
       // to maintain the decision maker controller's epoch in the zookeeper path
-      // 记录Controller的年代信息
+      // 更新Controller的年代信息
       controllerEpoch = partitionStateInfo.controllerEpoch
       // add replicas that are new
       // 1. 创建AR集合中所有副本对应的Replica对象（如果不存在该Replica）
@@ -223,7 +223,7 @@ class Partition(val topic: String,
       // 2. 获取ISR集合
       val newInSyncReplicas = partitionStateInfo.isr.asScala.map(r => getOrCreateReplica(r)).toSet
       // remove assigned replicas that have been removed by the controller
-      // 3. 根据allReplicas更新assignedReplicas集合
+      // 3. 剔除assignedReplicas集合中除allReplicas集合以外的副本
       (assignedReplicas().map(_.brokerId) -- allReplicas).foreach(removeReplica(_))
       // 4. 更新Partition中的相关字段
       inSyncReplicas = newInSyncReplicas // 更新ISR
@@ -239,7 +239,7 @@ class Partition(val topic: String,
           leaderReplicaIdOpt = Some(localBrokerId)
           true
         }
-      // 获取本地副本
+      // 获取Leader副本
       val leaderReplica = getReplica().get
       // we may need to increment high watermark since ISR could be down to 1
       if (isNewLeader) {
@@ -353,8 +353,8 @@ class Partition(val topic: String,
           /**
             * 同时满足以下三个条件则可以将当前副本添加到In-Sync集合中：
             * 1. 当前In-Sync集合不包含当前Replica副本；
-            * 2. 当前副本是否是assignedReplicas副本（AR）之一；
-            * 3. 当前副本的LEO大于等于Leader副本的HighWatermark；
+            * 2. 当前副本是assignedReplicas副本集合（AR集合）之一；
+            * 3. 当前副本的LogEndOffset大于等于Leader副本的HighWatermark；
             */
           if(!inSyncReplicas.contains(replica) &&
              assignedReplicas.map(_.brokerId).contains(replicaId) &&
@@ -390,7 +390,7 @@ class Partition(val topic: String,
    * and we are waiting for all replicas in ISR to be fully caught up to
    * the (local) leader's offset corresponding to this produce request
    * before we acknowledge the produce request.
-   * 检测HighWatermark线
+   * 检测Follower副本与Leader副本的同步情况
    */
   def checkEnoughReplicasReachOffset(requiredOffset: Long): (Boolean, Short) = {
     leaderReplicaIfLocal() match {

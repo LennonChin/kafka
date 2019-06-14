@@ -265,6 +265,7 @@ class ReplicaFetcherThread(name: String,
   }
 
   private def sendRequest(apiKey: ApiKeys, apiVersion: Option[Short], request: AbstractRequest): ClientResponse = {
+    // 封装NetworkClient对象
     import kafka.utils.NetworkClientBlockingOps._
     // 构造请求头
     val header = apiVersion.fold(networkClient.nextRequestHeader(apiKey))(networkClient.nextRequestHeader(apiKey, _))
@@ -311,13 +312,13 @@ class ReplicaFetcherThread(name: String,
     val requestMap = mutable.Map.empty[TopicPartition, JFetchRequest.PartitionData]
 
     partitionMap.foreach { case ((TopicAndPartition(topic, partition), partitionFetchState)) =>
-      if (partitionFetchState.isActive) // 检测分区的同步状态是否为激活状态
+      if (partitionFetchState.isActive) // 检测分区的拉取状态是否为激活状态
         // 为每个分区构造请求对象
-        requestMap(new TopicPartition(topic, partition)) = new JFetchRequest.PartitionData(partitionFetchState.offset, fetchSize)
+        requestMap(new TopicPartition(topic, partition)) = new JFetchRequest.PartitionData(partitionFetchState.offset, fetchSize) // replica.fetch.max.bytes
     }
 
     // 构造一个FetchRequest请求对象并返回
-    new FetchRequest(new JFetchRequest(replicaId, maxWait, minBytes, requestMap.asJava))
+    new FetchRequest(new JFetchRequest(replicaId, maxWait, minBytes, requestMap.asJava)) // replica.fetch.wait.max.ms、replica.fetch.min.bytes
   }
 
 }

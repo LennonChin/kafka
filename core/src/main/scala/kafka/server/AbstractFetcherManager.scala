@@ -66,6 +66,7 @@ abstract class AbstractFetcherManager(protected val name: String, clientId: Stri
   Map("clientId" -> clientId)
   )
 
+  // 根据主题和分区ID计算拉取线程ID
   private def getFetcherId(topic: String, partitionId: Int) : Int = {
     Utils.abs(31 * topic.hashCode() + partitionId) % numFetchers
   }
@@ -78,6 +79,7 @@ abstract class AbstractFetcherManager(protected val name: String, clientId: Stri
       /**
         * 对partitionAndOffsets根据构造的BrokerAndFetcherId为分组项进行分组
         * 每个Fetcher线程只服务于一个broker，但可以为多个分区的Follower完成同步
+        * 得到的结果为 Map[BrokerAndFetcherId, Seq[Map[TopicAndPartition, BrokerAndInitialOffset]]]
         */
       val partitionsPerFetcher = partitionAndOffsets.groupBy{ case(topicAndPartition, brokerAndInitialOffset) =>
         BrokerAndFetcherId(brokerAndInitialOffset.broker, getFetcherId(topicAndPartition.topic, topicAndPartition.partition))}
@@ -106,6 +108,7 @@ abstract class AbstractFetcherManager(protected val name: String, clientId: Stri
       "[" + topicAndPartition + ", initOffset " + brokerAndInitialOffset.initOffset + " to broker " + brokerAndInitialOffset.broker + "] "}))
   }
 
+  // 移除某些分区的拉取任务
   def removeFetcherForPartitions(partitions: Set[TopicAndPartition]) {
     mapLock synchronized { // 加锁
       // 遍历fetcherThreadMap，移除对应的任务
@@ -116,6 +119,7 @@ abstract class AbstractFetcherManager(protected val name: String, clientId: Stri
     info("Removed fetcher for partitions %s".format(partitions.mkString(",")))
   }
 
+  // 关闭空闲拉取线程
   def shutdownIdleFetcherThreads() {
     mapLock synchronized { // 加锁
       val keysToBeRemoved = new mutable.HashSet[BrokerAndFetcherId]
@@ -133,11 +137,14 @@ abstract class AbstractFetcherManager(protected val name: String, clientId: Stri
     }
   }
 
+  // 关闭所有管理的拉取线程
   def closeAllFetchers() {
     mapLock synchronized {
+      // 遍历，调用shutdown()
       for ( (_, fetcher) <- fetcherThreadMap) {
         fetcher.shutdown()
       }
+      // 清空fetcherThreadMap
       fetcherThreadMap.clear()
     }
   }

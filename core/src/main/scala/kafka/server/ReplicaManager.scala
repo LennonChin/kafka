@@ -194,6 +194,7 @@ class ReplicaManager(val config: KafkaConfig,
       lastIsrChangeMs.set(System.currentTimeMillis())
     }
   }
+
   /**
    * This function periodically runs to see if ISR needs to be propagated. It propagates ISR when:
    * 1. There is ISR change not propagated yet.
@@ -205,7 +206,7 @@ class ReplicaManager(val config: KafkaConfig,
     val now = System.currentTimeMillis()
     isrChangeSet synchronized { // 加锁
       /**
-        * 检查是否需要执行定时任务
+        * 检查是否需要执行定时任务：1 & (2 || 3)
         * 1. isrChangeSet不为空；
         * 2. 最后一次有ISR集合发生变化的时间距今已超过5秒；
         * 3. 上次写入Zookeeper的时间距今已超过60秒。
@@ -689,6 +690,7 @@ class ReplicaManager(val config: KafkaConfig,
       replica.log.map(_.config.messageFormatVersion.messageFormatVersion)
     }
 
+  // 可能需要更新Broker的元数据
   def maybeUpdateMetadataCache(correlationId: Int, updateMetadataRequest: UpdateMetadataRequest, metadataCache: MetadataCache) {
     replicaStateChangeLock synchronized { // 加锁
       if(updateMetadataRequest.controllerEpoch < controllerEpoch) { // 检查Controller年代信息
@@ -708,6 +710,7 @@ class ReplicaManager(val config: KafkaConfig,
     }
   }
 
+  // 负责副本角色切换
   def becomeLeaderOrFollower(correlationId: Int,
                              leaderAndISRRequest: LeaderAndIsrRequest,
                              metadataCache: MetadataCache,
@@ -722,7 +725,7 @@ class ReplicaManager(val config: KafkaConfig,
       // 新建一个HashMap用于记录产生的错误码
       val responseMap = new mutable.HashMap[TopicPartition, Short]
       if (leaderAndISRRequest.controllerEpoch < controllerEpoch) { // 检查请求中的Controller的年代信息
-        // 如果请求中的Controller年代信息小于当前的年代信息，直接返回STALE_CONTROLLER_EPOCH异常吗
+        // 如果请求中的Controller年代信息小于当前的年代信息，直接返回STALE_CONTROLLER_EPOCH异常码
         // 日志处理
         leaderAndISRRequest.partitionStates.asScala.foreach { case (topicPartition, stateInfo) =>
         stateChangeLogger.warn(("Broker %d ignoring LeaderAndIsr request from controller %d with correlation id %d since " +
@@ -750,7 +753,7 @@ class ReplicaManager(val config: KafkaConfig,
           // If the leader epoch is valid record the epoch of the controller that made the leadership decision.
           // This is useful while updating the isr to maintain the decision maker controller's epoch in the zookeeper path
           if (partitionLeaderEpoch < stateInfo.leaderEpoch) { // 判断当前Partition的年代信息是否合法
-            // 判断该分区的副本是否被分配到了当前的broker
+            // 判断该分配方案中是否有副本被分配到了当前的broker
             if(stateInfo.replicas.contains(config.brokerId))
               // 保留与当前broker相关的Partition以及PartitionState
               partitionState.put(partition, stateInfo)

@@ -195,6 +195,7 @@ class KafkaApis(val requestChannel: RequestChannel,
     replicaManager.replicaFetcherManager.shutdownIdleFetcherThreads()
   }
 
+  // 处理更新Broker元数据的请求
   def handleUpdateMetadataRequest(request: RequestChannel.Request) {
     // 请求关联ID
     val correlationId = request.header.correlationId
@@ -685,11 +686,13 @@ class KafkaApis(val requestChannel: RequestChannel,
     ret.toSeq.sortBy(-_)
   }
 
+  // 创建主题
   private def createTopic(topic: String,
                           numPartitions: Int,
                           replicationFactor: Int,
                           properties: Properties = new Properties()): MetadataResponse.TopicMetadata = {
     try {
+      // 使用AdminUtils创建主题
       AdminUtils.createTopic(zkUtils, topic, numPartitions, replicationFactor, properties, RackAwareMode.Safe)
       info("Auto creation of topic %s with %d partitions and replication factor %d is successful"
         .format(topic, numPartitions, replicationFactor))
@@ -705,6 +708,7 @@ class KafkaApis(val requestChannel: RequestChannel,
     }
   }
 
+  // 创建Group组的元数据存放的主题
   private def createGroupMetadataTopic(): MetadataResponse.TopicMetadata = {
     val aliveBrokers = metadataCache.getAliveBrokers
     val offsetsTopicReplicationFactor =
@@ -712,6 +716,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         Math.min(config.offsetsTopicReplicationFactor.toInt, aliveBrokers.length)
       else
         config.offsetsTopicReplicationFactor.toInt
+    // 创建__consumer_offsets
     createTopic(TopicConstants.GROUP_METADATA_TOPIC_NAME, config.offsetsTopicPartitions,
       offsetsTopicReplicationFactor, coordinator.offsetsTopicConfigs)
   }
@@ -729,12 +734,16 @@ class KafkaApis(val requestChannel: RequestChannel,
       topicResponses
     } else {
       val nonExistentTopics = topics -- topicResponses.map(_.topic).toSet
+      // 处理未知的主题
       val responsesForNonExistentTopics = nonExistentTopics.map { topic =>
         if (topic == TopicConstants.GROUP_METADATA_TOPIC_NAME) {
+          // 创建Group组的元数据存放的主题__consumer_offsets
           createGroupMetadataTopic()
-        } else if (config.autoCreateTopicsEnable) {
+        } else if (config.autoCreateTopicsEnable) { // auto.create.topics.enable
+          // 创建其他未知主题
           createTopic(topic, config.numPartitions, config.defaultReplicationFactor)
         } else {
+          // 无法创建未知主题
           new MetadataResponse.TopicMetadata(Errors.UNKNOWN_TOPIC_OR_PARTITION, topic, common.Topic.isInternal(topic),
             java.util.Collections.emptyList())
         }
