@@ -46,36 +46,63 @@ import java.util.concurrent.locks.ReentrantLock
 import kafka.server._
 import kafka.common.TopicAndPartition
 
+/**
+  * 维护了Controller使用到的上下文信息，可以看作ZooKeeper数据的缓存
+  * @param zkUtils Zookeeper工具类
+  * @param zkSessionTimeout Zookeeper超时时间
+  */
 class ControllerContext(val zkUtils: ZkUtils,
                         val zkSessionTimeout: Int) {
+  // 管理Controller与集群中Broker之间的连接
   var controllerChannelManager: ControllerChannelManager = null
   val controllerLock: ReentrantLock = new ReentrantLock()
+  // 正在关闭的Broker的ID集合
   var shuttingDownBrokerIds: mutable.Set[Int] = mutable.Set.empty
   val brokerShutdownLock: Object = new Object
+  /**
+    * Controller的年代信息，初始为0；
+    * Controller的年代信息存储在Zookeeper中的路径是/controller_epoch；
+    * 每次重新选举新的Leader Controller，epoch字段值就会增加1。
+    */
   var epoch: Int = KafkaController.InitialControllerEpoch - 1
+  // 年代信息的Zookeeper版本，初始为0
   var epochZkVersion: Int = KafkaController.InitialControllerEpochZkVersion - 1
+  // 整个集群中全部的Topic的名称
   var allTopics: Set[String] = Set.empty
+  // 记录了每个分区的AR集合
   var partitionReplicaAssignment: mutable.Map[TopicAndPartition, Seq[Int]] = mutable.Map.empty
+  // 记录了每个分区的Leader副本所在Broker的ID、ISR集合、年代信息
   var partitionLeadershipInfo: mutable.Map[TopicAndPartition, LeaderIsrAndControllerEpoch] = mutable.Map.empty
+  // 记录了正在重新分配副本的分区
   val partitionsBeingReassigned: mutable.Map[TopicAndPartition, ReassignedPartitionsContext] = new mutable.HashMap
+  // 记录了正在进行“优先副本”选举的分区
   val partitionsUndergoingPreferredReplicaElection: mutable.Set[TopicAndPartition] = new mutable.HashSet
 
+  // 记录了当前可用的Broker
   private var liveBrokersUnderlying: Set[Broker] = Set.empty
+  // 记录了当前可用的Broker的ID
   private var liveBrokerIdsUnderlying: Set[Int] = Set.empty
 
   // setter
+  // 对liveBrokersUnderlying和liveBrokerIdsUnderlying的setter方法
   def liveBrokers_=(brokers: Set[Broker]) {
     liveBrokersUnderlying = brokers
     liveBrokerIdsUnderlying = liveBrokersUnderlying.map(_.id)
   }
 
   // getter
+  /**
+    * 对liveBrokersUnderlying和liveBrokerIdsUnderlying的getter方法
+    * 从liveBrokersUnderlying或liveBrokerIdsUnderlying集合中排除shuttingDownBrokerIds集合后返回
+    */
   def liveBrokers = liveBrokersUnderlying.filter(broker => !shuttingDownBrokerIds.contains(broker.id))
   def liveBrokerIds = liveBrokerIdsUnderlying.filter(brokerId => !shuttingDownBrokerIds.contains(brokerId))
 
+  // 获取liveBrokersUnderlying/liveBrokerIdsUnderlying集合
   def liveOrShuttingDownBrokerIds = liveBrokerIdsUnderlying
   def liveOrShuttingDownBrokers = liveBrokersUnderlying
 
+  // 获取在指定Broker中存在有副本的分区集合
   def partitionsOnBroker(brokerId: Int): Set[TopicAndPartition] = {
     partitionReplicaAssignment
       .filter { case(topicAndPartition, replicas) => replicas.contains(brokerId) }
@@ -83,6 +110,7 @@ class ControllerContext(val zkUtils: ZkUtils,
       .toSet
   }
 
+  // 获取指定Broker集合中保存的所有副本
   def replicasOnBrokers(brokerIds: Set[Int]): Set[PartitionAndReplica] = {
     brokerIds.map { brokerId =>
       partitionReplicaAssignment
@@ -92,6 +120,7 @@ class ControllerContext(val zkUtils: ZkUtils,
     }.flatten.toSet
   }
 
+  // 获取指定Topic的所有副本
   def replicasForTopic(topic: String): Set[PartitionAndReplica] = {
     partitionReplicaAssignment
       .filter { case(topicAndPartition, replicas) => topicAndPartition.topic.equals(topic) }
@@ -102,15 +131,18 @@ class ControllerContext(val zkUtils: ZkUtils,
     }.flatten.toSet
   }
 
+  // 获取指定Topic的所有分区
   def partitionsForTopic(topic: String): collection.Set[TopicAndPartition] = {
     partitionReplicaAssignment
       .filter { case(topicAndPartition, replicas) => topicAndPartition.topic.equals(topic) }.keySet
   }
 
+  // 获取所有可用Broker中保存的副本
   def allLiveReplicas(): Set[PartitionAndReplica] = {
     replicasOnBrokers(liveBrokerIds)
   }
 
+  // 获取指定分区集合的副本
   def replicasForPartition(partitions: collection.Set[TopicAndPartition]): collection.Set[PartitionAndReplica] = {
     partitions.map { p =>
       val replicas = partitionReplicaAssignment(p)
@@ -118,6 +150,7 @@ class ControllerContext(val zkUtils: ZkUtils,
     }.flatten
   }
 
+  // 删除指定Topic
   def removeTopic(topic: String) = {
     partitionLeadershipInfo = partitionLeadershipInfo.filter{ case (topicAndPartition, _) => topicAndPartition.topic != topic }
     partitionReplicaAssignment = partitionReplicaAssignment.filter{ case (topicAndPartition, _) => topicAndPartition.topic != topic }
@@ -1449,6 +1482,7 @@ class PreferredReplicaElectionListener(controller: KafkaController) extends IZkD
   }
 }
 
+//封装了新分配的AR集合信息以及用于监听ISR集合变化的ReassignedPartitionsIsrChangeListener监听器
 case class ReassignedPartitionsContext(var newReplicas: Seq[Int] = Seq.empty,
                                        var isrChangeListener: ReassignedPartitionsIsrChangeListener = null)
 
