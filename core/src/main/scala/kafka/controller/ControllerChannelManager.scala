@@ -348,7 +348,7 @@ class ControllerBrokerRequestBatch(controller: KafkaController) extends  Logging
     * @param topic 主题
     * @param partition 分区
     * @param leaderIsrAndControllerEpoch 年代信息
-    * @param replicas 副本集
+    * @param replicas 新分配的副本集
     * @param callback 回调
     */
   def addLeaderAndIsrRequestForBrokers(brokerIds: Seq[Int], topic: String, partition: Int,

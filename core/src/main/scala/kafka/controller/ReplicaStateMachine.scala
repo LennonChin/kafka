@@ -43,6 +43,8 @@ import kafka.utils.CoreUtils._
  * 6. ReplicaDeletionIneligible: If replica deletion fails, it is moved to this state. Valid previous state is ReplicaDeletionStarted
  * 7. NonExistentReplica: If a replica is deleted successfully, it is moved to this state. Valid previous state is
  *                        ReplicaDeletionSuccessful
+  *
+  * ReplicaStateMachine是Controller Leader用于维护副本状态的状态机。
  */
 class ReplicaStateMachine(controller: KafkaController) extends Logging {
   private val controllerContext = controller.controllerContext
@@ -385,11 +387,19 @@ class ReplicaStateMachine(controller: KafkaController) extends Logging {
   }
 }
 
+// 副本状态
 sealed trait ReplicaState { def state: Byte }
+// 创建新Topic或进行副本重新分配时，新创建的副本就处于这个状态。处于此状态的副本只能成为Follower副本。
 case object NewReplica extends ReplicaState { val state: Byte = 1 }
+// 副本开始正常工作时处于此状态，处在此状态的副本可以成为Leader副本，也可以成为Follower副本。
 case object OnlineReplica extends ReplicaState { val state: Byte = 2 }
+// 副本所在的Broker下线后，会转换为此状态。
 case object OfflineReplica extends ReplicaState { val state: Byte = 3 }
+// 刚开始删除副本时，会先将副本转换为此状态，然后开始删除操作。
 case object ReplicaDeletionStarted extends ReplicaState { val state: Byte = 4}
+// 副本被成功删除后，副本状态会处于此状态。
 case object ReplicaDeletionSuccessful extends ReplicaState { val state: Byte = 5}
+// 如果副本删除操作失败，会将副本转换为此状态。
 case object ReplicaDeletionIneligible extends ReplicaState { val state: Byte = 6}
+// 副本被成功删除后最终转换为此状态。
 case object NonExistentReplica extends ReplicaState { val state: Byte = 7 }
