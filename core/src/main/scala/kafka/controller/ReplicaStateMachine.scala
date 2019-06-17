@@ -50,9 +50,13 @@ class ReplicaStateMachine(controller: KafkaController) extends Logging {
   private val controllerContext = controller.controllerContext
   private val controllerId = controller.config.brokerId
   private val zkUtils = controllerContext.zkUtils
+  // 记录每个副本对应的ReplicaState状态
   private val replicaState: mutable.Map[PartitionAndReplica, ReplicaState] = mutable.Map.empty
+  // 用于监听Broker的变化，例如Broker宕机或重新上线等事件
   private val brokerChangeListener = new BrokerChangeListener()
   private val brokerRequestBatch = new ControllerBrokerRequestBatch(controller)
+
+  // 标识状态机是否启动
   private val hasStarted = new AtomicBoolean(false)
   private val stateChangeLogger = KafkaController.stateChangeLogger
 
@@ -66,10 +70,11 @@ class ReplicaStateMachine(controller: KafkaController) extends Logging {
    */
   def startup() {
     // initialize replica state
-    initializeReplicaState()
+    initializeReplicaState() // 初始化replicaState集合
     // set started flag
-    hasStarted.set(true)
+    hasStarted.set(true) // 标识已启动
     // move all Online replicas to Online
+    // 尝试将所有可用副本转换为OnlineReplica状态
     handleStateChanges(controllerContext.allLiveReplicas(), OnlineReplica)
 
     info("Started replica state machine with initial state -> " + replicaState.toString())
@@ -151,87 +156,127 @@ class ReplicaStateMachine(controller: KafkaController) extends Logging {
    *
    * ReplicaDeletionSuccessful -> NonExistentReplica
    * -- remove the replica from the in memory partition replica assignment cache
-
-
+    *
+    * 该方法用于控制ReplicaState转换
+    *
    * @param partitionAndReplica The replica for which the state transition is invoked
    * @param targetState The end state that the replica should be moved to
    */
   def handleStateChange(partitionAndReplica: PartitionAndReplica, targetState: ReplicaState,
                         callbacks: Callbacks) {
+
+    // 获取主题、分区和副本ID
     val topic = partitionAndReplica.topic
     val partition = partitionAndReplica.partition
     val replicaId = partitionAndReplica.replica
+
     val topicAndPartition = TopicAndPartition(topic, partition)
+
+    // 如果状态机没有启动则抛出异常
     if (!hasStarted.get)
       throw new StateChangeFailedException(("Controller %d epoch %d initiated state change of replica %d for partition %s " +
                                             "to %s failed because replica state machine has not started")
                                               .format(controllerId, controller.epoch, replicaId, topicAndPartition, targetState))
+
+    // 获取副本当前的状态，如果没有对应的状态就设置初始值为NonExistentReplica
     val currState = replicaState.getOrElseUpdate(partitionAndReplica, NonExistentReplica)
     try {
+
+      // 获取分区的AR集合
       val replicaAssignment = controllerContext.partitionReplicaAssignment(topicAndPartition)
+
+      // 针对目标状态进行匹配
       targetState match {
-        case NewReplica =>
+        case NewReplica => // 目标状态是NewReplica
+          // 检查前置状态是否合理，必须是NonExistentReplica
           assertValidPreviousStates(partitionAndReplica, List(NonExistentReplica), targetState)
           // start replica as a follower to the current leader for its partition
+          // 获取分区的Leader、ISR、Controller年代等信息
           val leaderIsrAndControllerEpochOpt = ReplicationUtils.getLeaderIsrAndEpochForPartition(zkUtils, topic, partition)
           leaderIsrAndControllerEpochOpt match {
+            // 能够获取到Leader、ISR等信息
             case Some(leaderIsrAndControllerEpoch) =>
+              // 当前分区是Leader分区，Leader副本不可以处于NewReplica状态
               if(leaderIsrAndControllerEpoch.leaderAndIsr.leader == replicaId)
                 throw new StateChangeFailedException("Replica %d for partition %s cannot be moved to NewReplica"
                   .format(replicaId, topicAndPartition) + "state as it is being requested to become leader")
+
+              // 向对应副本发送LeaderAndIsrRequest请求，并发送UpdateMetadataRequest给所有可用的Broker
               brokerRequestBatch.addLeaderAndIsrRequestForBrokers(List(replicaId),
                                                                   topic, partition, leaderIsrAndControllerEpoch,
                                                                   replicaAssignment)
+            // 未能获取Leader、ISR等信息
             case None => // new leader request will be sent to this replica when one gets elected
           }
+
+          // 更新状态
           replicaState.put(partitionAndReplica, NewReplica)
           stateChangeLogger.trace("Controller %d epoch %d changed state of replica %d for partition %s from %s to %s"
                                     .format(controllerId, controller.epoch, replicaId, topicAndPartition, currState,
                                             targetState))
-        case ReplicaDeletionStarted =>
+        case ReplicaDeletionStarted => // 目标状态是ReplicaDeletionStarted
+          // 检查前置状态是否合理，必须是OfflineReplica
           assertValidPreviousStates(partitionAndReplica, List(OfflineReplica), targetState)
+          // 更新状态
           replicaState.put(partitionAndReplica, ReplicaDeletionStarted)
           // send stop replica command
+          // 向副本发送StopReplicaRequest请求
           brokerRequestBatch.addStopReplicaRequestForBrokers(List(replicaId), topic, partition, deletePartition = true,
             callbacks.stopReplicaResponseCallback)
           stateChangeLogger.trace("Controller %d epoch %d changed state of replica %d for partition %s from %s to %s"
             .format(controllerId, controller.epoch, replicaId, topicAndPartition, currState, targetState))
-        case ReplicaDeletionIneligible =>
+        case ReplicaDeletionIneligible => // 目标状态是ReplicaDeletionIneligible
+          // 检查前置状态是否合理，必须是ReplicaDeletionStarted
           assertValidPreviousStates(partitionAndReplica, List(ReplicaDeletionStarted), targetState)
+          // 更新状态
           replicaState.put(partitionAndReplica, ReplicaDeletionIneligible)
           stateChangeLogger.trace("Controller %d epoch %d changed state of replica %d for partition %s from %s to %s"
             .format(controllerId, controller.epoch, replicaId, topicAndPartition, currState, targetState))
-        case ReplicaDeletionSuccessful =>
+        case ReplicaDeletionSuccessful => // 目标状态是ReplicaDeletionSuccessful
+          // 检查前置状态是否合理，必须是ReplicaDeletionStarted
           assertValidPreviousStates(partitionAndReplica, List(ReplicaDeletionStarted), targetState)
+          // 更新状态
           replicaState.put(partitionAndReplica, ReplicaDeletionSuccessful)
           stateChangeLogger.trace("Controller %d epoch %d changed state of replica %d for partition %s from %s to %s"
             .format(controllerId, controller.epoch, replicaId, topicAndPartition, currState, targetState))
-        case NonExistentReplica =>
+        case NonExistentReplica => // 目标状态是NonExistentReplica
+          // 检查前置状态是否合理，必须是ReplicaDeletionSuccessful
           assertValidPreviousStates(partitionAndReplica, List(ReplicaDeletionSuccessful), targetState)
           // remove this replica from the assigned replicas list for its partition
+          // 获取分区对应的AR集合
           val currentAssignedReplicas = controllerContext.partitionReplicaAssignment(topicAndPartition)
+          // 从AR集合中删除该副本
           controllerContext.partitionReplicaAssignment.put(topicAndPartition, currentAssignedReplicas.filterNot(_ == replicaId))
+          // 删除副本状态
           replicaState.remove(partitionAndReplica)
           stateChangeLogger.trace("Controller %d epoch %d changed state of replica %d for partition %s from %s to %s"
             .format(controllerId, controller.epoch, replicaId, topicAndPartition, currState, targetState))
-        case OnlineReplica =>
+        case OnlineReplica => // 目标状态是OnlineReplica
+          // 检查前置状态是否合理，必须是NewReplica、OnlineReplica、OfflineReplica、ReplicaDeletionIneligible
           assertValidPreviousStates(partitionAndReplica,
             List(NewReplica, OnlineReplica, OfflineReplica, ReplicaDeletionIneligible), targetState)
           replicaState(partitionAndReplica) match {
-            case NewReplica =>
+            case NewReplica => // 当前状态是NewReplica
               // add this replica to the assigned replicas list for its partition
+              // 获取分区的AR集合
               val currentAssignedReplicas = controllerContext.partitionReplicaAssignment(topicAndPartition)
+
+              // 分区当前的AR集合中不包含指定的副本时，将该副本添加到AR集合中
               if(!currentAssignedReplicas.contains(replicaId))
                 controllerContext.partitionReplicaAssignment.put(topicAndPartition, currentAssignedReplicas :+ replicaId)
               stateChangeLogger.trace("Controller %d epoch %d changed state of replica %d for partition %s from %s to %s"
                                         .format(controllerId, controller.epoch, replicaId, topicAndPartition, currState,
                                                 targetState))
-            case _ =>
+            case _ => // 当前状态是除NewReplica以外的其他状态（OnlineReplica、OfflineReplica、ReplicaDeletionIneligible）
               // check if the leader for this partition ever existed
+              // 获取分区的Leader副本信息
               controllerContext.partitionLeadershipInfo.get(topicAndPartition) match {
+                // 如果存在Leader副本
                 case Some(leaderIsrAndControllerEpoch) =>
+                  // 向副本发送LeaderAndIsrRequest请求，并向集群中所有可用的Broker发送UpdateMetadataRequest请求
                   brokerRequestBatch.addLeaderAndIsrRequestForBrokers(List(replicaId), topic, partition, leaderIsrAndControllerEpoch,
                     replicaAssignment)
+                  // 更改状态为OnlineReplica
                   replicaState.put(partitionAndReplica, OnlineReplica)
                   stateChangeLogger.trace("Controller %d epoch %d changed state of replica %d for partition %s from %s to %s"
                     .format(controllerId, controller.epoch, replicaId, topicAndPartition, currState, targetState))
@@ -240,32 +285,41 @@ class ReplicaStateMachine(controller: KafkaController) extends Logging {
               }
           }
           replicaState.put(partitionAndReplica, OnlineReplica)
-        case OfflineReplica =>
+        case OfflineReplica => // 目标状态是OfflineReplica
+          // 检查前置状态是否合理，必须是NewReplica、OnlineReplica、OfflineReplica、ReplicaDeletionIneligible
           assertValidPreviousStates(partitionAndReplica,
             List(NewReplica, OnlineReplica, OfflineReplica, ReplicaDeletionIneligible), targetState)
           // send stop replica command to the replica so that it stops fetching from the leader
+          // 向该副本发送StopReplicaRequest请求，但不会删除副本（deletePartition为false）
           brokerRequestBatch.addStopReplicaRequestForBrokers(List(replicaId), topic, partition, deletePartition = false)
           // As an optimization, the controller removes dead replicas from the ISR
           val leaderAndIsrIsEmpty: Boolean =
+            // 获取分区的Leader副本
             controllerContext.partitionLeadershipInfo.get(topicAndPartition) match {
+              // 能够获取到Leader副本
               case Some(currLeaderIsrAndControllerEpoch) =>
+                // 从ISR集合中移除该副本
                 controller.removeReplicaFromIsr(topic, partition, replicaId) match {
+                  // ISR集合移除该副本后Leader副本还存在，即移除的副本不是Leader副本
                   case Some(updatedLeaderIsrAndControllerEpoch) =>
                     // send the shrunk ISR state change request to all the remaining alive replicas of the partition.
+                    // 当前的ISR集合
                     val currentAssignedReplicas = controllerContext.partitionReplicaAssignment(topicAndPartition)
-                    if (!controller.deleteTopicManager.isPartitionToBeDeleted(topicAndPartition)) {
+                    if (!controller.deleteTopicManager.isPartitionToBeDeleted(topicAndPartition)) { // 当前分区并不是将要删除的分区
+                      // 向其他可用副本发送LeaderAndIsrRequest请求，并向集群中所有可用的Broker发送UpdateMetadataRequest
                       brokerRequestBatch.addLeaderAndIsrRequestForBrokers(currentAssignedReplicas.filterNot(_ == replicaId),
                         topic, partition, updatedLeaderIsrAndControllerEpoch, replicaAssignment)
                     }
+                    // 更新状态
                     replicaState.put(partitionAndReplica, OfflineReplica)
                     stateChangeLogger.trace("Controller %d epoch %d changed state of replica %d for partition %s from %s to %s"
                       .format(controllerId, controller.epoch, replicaId, topicAndPartition, currState, targetState))
-                    false
+                    false // 能找到Leader副本，返回false
                   case None =>
-                    true
+                    true // 找不到Leader副本，返回true
                 }
               case None =>
-                true
+                true // 找不到Leader副本，返回true
             }
           if (leaderAndIsrIsEmpty && !controller.deleteTopicManager.isPartitionToBeDeleted(topicAndPartition))
             throw new StateChangeFailedException(
@@ -325,16 +379,24 @@ class ReplicaStateMachine(controller: KafkaController) extends Logging {
   /**
    * Invoked on startup of the replica's state machine to set the initial state for replicas of all existing partitions
    * in zookeeper
+    *
+    * 根据ControllerContext的partitionLeadershipInfo中记录的Broker状态来设置每个副本的初始状态
    */
   private def initializeReplicaState() {
+    // 遍历ControllerContext中记录的所有分区及对应的AR副本集
     for((topicPartition, assignedReplicas) <- controllerContext.partitionReplicaAssignment) {
       val topic = topicPartition.topic
       val partition = topicPartition.partition
+
+      // 遍历每个分区的AR副本集
       assignedReplicas.foreach { replicaId =>
         val partitionAndReplica = PartitionAndReplica(topic, partition, replicaId)
+
+        // 遍历可用Broker的ID集
         controllerContext.liveBrokerIds.contains(replicaId) match {
+          // 如果副本是可用的，则设置为OnlineReplica状态
           case true => replicaState.put(partitionAndReplica, OnlineReplica)
-          case false =>
+          case false => // 否则设置为ReplicaDeletionIneligible状态
             // mark replicas on dead brokers as failed for topic deletion, if they belong to a topic to be deleted.
             // This is required during controller failover since during controller failover a broker can go down,
             // so the replicas on that broker should be moved to ReplicaDeletionIneligible to be on the safer side.
