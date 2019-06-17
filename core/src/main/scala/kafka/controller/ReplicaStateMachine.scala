@@ -335,9 +335,12 @@ class ReplicaStateMachine(controller: KafkaController) extends Logging {
   }
 
   def areAllReplicasForTopicDeleted(topic: String): Boolean = {
+    // 获取主题的副本集合
     val replicasForTopic = controller.controllerContext.replicasForTopic(topic)
+    // 获取所有副本的状态
     val replicaStatesForTopic = replicasForTopic.map(r => (r, replicaState(r))).toMap
     debug("Are all replicas for topic %s deleted %s".format(topic, replicaStatesForTopic))
+    // 判断这些副本的状态是否都是ReplicaDeletionSuccessful
     replicaStatesForTopic.forall(_._2 == ReplicaDeletionSuccessful)
   }
 

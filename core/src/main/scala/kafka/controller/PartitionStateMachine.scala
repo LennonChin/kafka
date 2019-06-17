@@ -474,8 +474,11 @@ class PartitionStateMachine(controller: KafkaController) extends Logging {
     zkUtils.zkClient.subscribeDataChanges(getTopicPath(topic), partitionModificationsListeners(topic))
   }
 
+  // 移除主题分区上的监听器
   def deregisterPartitionChangeListener(topic: String) = {
+    // 从Zookeeper中移除监听分区修改的监听器
     zkUtils.zkClient.unsubscribeDataChanges(getTopicPath(topic), partitionModificationsListeners(topic))
+    // 从partitionModificationsListeners移除记录的主题的监听器
     partitionModificationsListeners.remove(topic)
   }
 
@@ -502,6 +505,7 @@ class PartitionStateMachine(controller: KafkaController) extends Logging {
 
   /**
    * This is the zookeeper listener that triggers all the state transitions for a partition
+    * TopicChangeListener负责管理Topic的增删，它监听/brokers/topics节点的子节点的变化
    */
   class TopicChangeListener extends IZkChildListener with Logging {
     this.logIdent = "[TopicChangeListener on Controller " + controller.config.brokerId + "]: "
@@ -511,23 +515,28 @@ class PartitionStateMachine(controller: KafkaController) extends Logging {
       inLock(controllerContext.controllerLock) {
         if (hasStarted.get) {
           try {
-            val currentChildren = {
+            val currentChildren = { // 获取/brokers/topics下的子节点集合
               import JavaConversions._
               debug("Topic change listener fired for path %s with children %s".format(parentPath, children.mkString(",")))
               (children: Buffer[String]).toSet
             }
+            // 过滤，得到新添加的Topic
             val newTopics = currentChildren -- controllerContext.allTopics
+            // 过滤，得到删除的Topic
             val deletedTopics = controllerContext.allTopics -- currentChildren
+            // 更新ControllerContext的allTopics集合
             controllerContext.allTopics = currentChildren
 
-            // 从Zookeeper的/brokers/topics/[topic_name]路径加载每个Partition的AR集合
+            // 从Zookeeper的/brokers/topics/[topic_name]路径加载新增Topic的分区信息和AR集合信息
             val addedPartitionReplicaAssignment = zkUtils.getReplicaAssignmentForTopics(newTopics.toSeq)
             // 更新ControllerContext的partitionReplicaAssignment记录的AR集合
+            // 去掉删除主题的副本，添加新增主题的副本
             controllerContext.partitionReplicaAssignment = controllerContext.partitionReplicaAssignment.filter(p =>
               !deletedTopics.contains(p._1.topic))
             controllerContext.partitionReplicaAssignment.++=(addedPartitionReplicaAssignment)
             info("New topics: [%s], deleted topics: [%s], new partition replica assignment [%s]".format(newTopics,
               deletedTopics, addedPartitionReplicaAssignment))
+            // 调用KafkaController的onNewTopicCreation()处理新增Topic
             if(newTopics.size > 0)
               controller.onNewTopicCreation(newTopics, addedPartitionReplicaAssignment.keySet.toSet)
           } catch {
@@ -542,6 +551,10 @@ class PartitionStateMachine(controller: KafkaController) extends Logging {
    * Delete topics includes the following operations -
    * 1. Add the topic to be deleted to the delete topics cache, only if the topic exists
    * 2. If there are topics to be deleted, it signals the delete topic thread
+    *
+    * 主题删除操作监听器
+    * 1. 当被删除的主题存在时，将其添加到记录删除主题的缓存中；
+    * 2. 当由主题被删除时，会通知DeleteTopicThread线程
    */
   class DeleteTopicsListener() extends IZkChildListener with Logging {
     this.logIdent = "[DeleteTopicsListener on " + controller.config.brokerId + "]: "
@@ -577,6 +590,7 @@ class PartitionStateMachine(controller: KafkaController) extends Logging {
               controller.deleteTopicManager.markTopicIneligibleForDeletion(Set(topic))
           }
           // add topic to deletion list
+          // 通过该方法将待删除的主题放入到topicsToBeDeleted集合，将待删除的主题的分区放入到partitionsToBeDeleted集合
           controller.deleteTopicManager.enqueueTopicsForDeletion(topicsToBeDeleted)
         }
       }
