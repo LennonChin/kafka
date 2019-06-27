@@ -73,7 +73,7 @@ class ControllerContext(val zkUtils: ZkUtils,
   var partitionReplicaAssignment: mutable.Map[TopicAndPartition, Seq[Int]] = mutable.Map.empty
   // 记录了每个分区的Leader副本所在Broker的ID、ISR集合、年代信息
   var partitionLeadershipInfo: mutable.Map[TopicAndPartition, LeaderIsrAndControllerEpoch] = mutable.Map.empty
-  // 记录了正在重新分配副本的分区
+  // 记录了正在进行重新分配副本的分区
   val partitionsBeingReassigned: mutable.Map[TopicAndPartition, ReassignedPartitionsContext] = new mutable.HashMap
   // 记录了正在进行“优先副本”选举的分区
   val partitionsUndergoingPreferredReplicaElection: mutable.Set[TopicAndPartition] = new mutable.HashSet
@@ -196,6 +196,7 @@ class KafkaController(val config : KafkaConfig, zkUtils: ZkUtils, val brokerStat
   val controllerContext = new ControllerContext(zkUtils, config.zkSessionTimeoutMs)
   val partitionStateMachine = new PartitionStateMachine(this)
   val replicaStateMachine = new ReplicaStateMachine(this)
+  // Controller Leader选举器
   private val controllerElector = new ZookeeperLeaderElector(controllerContext, ZkUtils.ControllerPath, onControllerFailover,
     onControllerResignation, config.brokerId)
   // have a separate scheduler for the controller to be able to start and stop independently of the
@@ -338,6 +339,8 @@ class KafkaController(val config : KafkaConfig, zkUtils: ZkUtils, val brokerStat
   }
 
   /**
+    * 当前Broker成功选举为Controller Leader时会通过该方法完成一系列的初始化操作
+    *
    * This callback is invoked by the zookeeper leader elector on electing the current broker as the new controller.
    * It does the following things on the become-controller state change -
    * 1. Register controller epoch changed listener
@@ -354,32 +357,55 @@ class KafkaController(val config : KafkaConfig, zkUtils: ZkUtils, val brokerStat
     if(isRunning) {
       info("Broker %d starting become controller state transition".format(config.brokerId))
       //read controller epoch from zk
+      // 读取Zookeeper中记录的ControllerEpochPath信息并更新到ControllerContext中
       readControllerEpochFromZookeeper()
       // increment the controller epoch
+      // 递增Controller Epoch，并写入Zookeeper
       incrementControllerEpoch(zkUtils.zkClient)
       // before reading source of truth from zookeeper, register the listeners to get broker/topic callbacks
+      // 注册一系列Zookeeper监听器
+      // 注册PartitionsReassignedListener
       registerReassignedPartitionsListener()
+      // 注册IsrChangeNotificationListener
       registerIsrChangeNotificationListener()
+      // 注册PreferredReplicaElecti onListener
       registerPreferredReplicaElectionListener()
+      // 注册TopicChangeListener、DeleteTopicsListener
       partitionStateMachine.registerListeners()
+      // 注册BrokerChangeListener
       replicaStateMachine.registerListeners()
+
+      /**
+        * 初始化ControllerContext，从Zookeeper中读取主题、分区、副本等原数据
+        * 启动ControllerChannelManager、TopicDeletionManager等组件
+        */
       initializeControllerContext()
+      // 启动副本状态机，以初始化各个副本的状态
       replicaStateMachine.startup()
+      // 启动烦去状态机，以初始化各个分区的状态
       partitionStateMachine.startup()
       // register the partition change listeners for all existing topics on failover
+      // 为所有Topic注册PartitionModificationsListener
       controllerContext.allTopics.foreach(topic => partitionStateMachine.registerPartitionChangeListener(topic))
       info("Broker %d is ready to serve as the new controller with epoch %d".format(config.brokerId, epoch))
+      // 修改Broker状态
       brokerState.newState(RunningAsController)
+      // 处理副本重新分配的分区，内部会调用initiateReassignReplicasForTopicPartition()
       maybeTriggerPartitionReassignment()
+      // 处理需要进行"优先副本"选举的分区，内部会调用onPreferredReplicaElection()
       maybeTriggerPreferredReplicaElection()
       /* send partition leadership info to all live brokers */
+      // 向集群中所有的Broker发送UpdateMetadataRequest更新其MetadataCache
       sendUpdateMetadataRequest(controllerContext.liveOrShuttingDownBrokerIds.toSeq)
       if (config.autoLeaderRebalanceEnable) {
         info("starting the partition rebalance scheduler")
+        // 启动partition-rebalance-thread定时任务，周期性检测是否需要进行分区的自动均衡
         autoRebalanceScheduler.startup()
+        // 每隔5秒周期性调用checkAndTriggerPartitionRebalance()方法
         autoRebalanceScheduler.schedule("partition-rebalance-thread", checkAndTriggerPartitionRebalance,
           5, config.leaderImbalanceCheckIntervalSeconds.toLong, TimeUnit.SECONDS)
       }
+      // 启动TopicDeletionManager，底层会启动DeleteTopicsThread线程
       deleteTopicManager.start()
     }
     else
@@ -389,37 +415,50 @@ class KafkaController(val config : KafkaConfig, zkUtils: ZkUtils, val brokerStat
   /**
    * This callback is invoked by the zookeeper leader elector when the current broker resigns as the controller. This is
    * required to clean up internal controller data structures
+    * 当LeaderChangeListener监听到/controller中的数据被删除或改变时，
+    * 旧的Controller Leader需要调用onControllerResignation()回调函数进行一些清理工作
    */
   def onControllerResignation() {
     debug("Controller resigning, broker id %d".format(config.brokerId))
     // de-register listeners
+    // 取消Zookeeper上的监听器
+    // 取消IsrChangeNotificationListener
     deregisterIsrChangeNotificationListener()
+    // 取消ReassignedPartitionsListener
     deregisterReassignedPartitionsListener()
+    // 取消PreferredReplicaElec tionListener
     deregisterPreferredReplicaElectionListener()
 
     // shutdown delete topic manager
+    // 关闭TopicDeletionManager
     if (deleteTopicManager != null)
       deleteTopicManager.shutdown()
 
     // shutdown leader rebalance scheduler
+    // 如果配置开启了Leader自动均衡，则关闭对应的partition-rebalance定时任务
     if (config.autoLeaderRebalanceEnable)
       autoRebalanceScheduler.shutdown()
 
     inLock(controllerContext.controllerLock) {
       // de-register partition ISR listener for on-going partition reassignment task
+      // 取消所有的ReassignedPartitionsIsrChangeListener
       deregisterReassignedPartitionsIsrChangeListeners()
       // shutdown partition state machine
+      // 关闭PartitionStateMachine和ReplicaStateMachine
       partitionStateMachine.shutdown()
       // shutdown replica state machine
       replicaStateMachine.shutdown()
       // shutdown controller channel manager
       if(controllerContext.controllerChannelManager != null) {
+        // 关闭ControllerChannelManager，断开与集群中其他Broker的链接
         controllerContext.controllerChannelManager.shutdown()
         controllerContext.controllerChannelManager = null
       }
       // reset controller context
+      // 重置Controller的Epoch和epochZkVersion
       controllerContext.epoch=0
       controllerContext.epochZkVersion=0
+      // 切换Broker状态
       brokerState.newState(RunningAsBroker)
 
       info("Broker %d resigned as the controller".format(config.brokerId))
@@ -764,8 +803,10 @@ class KafkaController(val config : KafkaConfig, zkUtils: ZkUtils, val brokerStat
   def startup() = {
     inLock(controllerContext.controllerLock) {
       info("Controller starting up")
+      // 注册SessionExpirationListener
       registerSessionExpirationListener()
       isRunning = true
+      // 启动ZookeeperLeaderElector
       controllerElector.startup
       info("Controller startup complete")
     }
@@ -824,17 +865,26 @@ class KafkaController(val config : KafkaConfig, zkUtils: ZkUtils, val brokerStat
 
   private def initializeControllerContext() {
     // update controller cache with delete topic information
+    // 从Zookeeper中初始化某些信息以更新ControllerContext的字段
+    // 读取/brokers/ids初始化可用Broker集合
     controllerContext.liveBrokers = zkUtils.getAllBrokersInCluster().toSet
+    // 读取/brokers/topics初始化集群中全部的Topic信息
     controllerContext.allTopics = zkUtils.getAllTopics().toSet
+    // 读取/brokers/topics/[topic_name]/partitions初始化每个Partition的AR集合信息
     controllerContext.partitionReplicaAssignment = zkUtils.getReplicaAssignmentForTopics(controllerContext.allTopics.toSeq)
     controllerContext.partitionLeadershipInfo = new mutable.HashMap[TopicAndPartition, LeaderIsrAndControllerEpoch]
     controllerContext.shuttingDownBrokerIds = mutable.Set.empty[Int]
     // update the leader and isr cache for all existing partitions from Zookeeper
+    // 读取/brokers/topics/[topic_name]/partitions/[partitionId]/state初始化每个Partition的Leader、ISR集合等信息
     updateLeaderAndIsrCache()
     // start the channel manager
+    // 启动ControllerChannelManager
     startChannelManager()
+    // 读取/admin/preferred_replica_election初始化需要“优先副本”选举的Partition
     initializePreferredReplicaElection()
+    // 读取/admin/reassign_partitions初始化需要进行副本重新分配的Partition
     initializePartitionReassignment()
+    // 启动TopicDeletionManager
     initializeTopicDeletion()
     info("Currently active brokers in the cluster: %s".format(controllerContext.liveBrokerIds))
     info("Currently shutting brokers in the cluster: %s".format(controllerContext.shuttingDownBrokerIds))
@@ -1246,6 +1296,10 @@ class KafkaController(val config : KafkaConfig, zkUtils: ZkUtils, val brokerStat
     finalLeaderIsrAndControllerEpoch
   }
 
+  /**
+    * 监听KafkaController与ZooKeeper的连接状态。
+    * 当KafkaController与ZooKeeper的连接超时后创建新连接时会触发handleNewSession()方法
+    */
   class SessionExpirationListener() extends IZkStateListener with Logging {
     this.logIdent = "[SessionExpirationListener on " + config.brokerId + "], "
     @throws(classOf[Exception])
@@ -1264,7 +1318,9 @@ class KafkaController(val config : KafkaConfig, zkUtils: ZkUtils, val brokerStat
     def handleNewSession() {
       info("ZK expired; shut down all controller components and try to re-elect")
       inLock(controllerContext.controllerLock) {
+        // 负责清理KafkaController依赖的对象
         onControllerResignation()
+        // 尝试选举新Controller Leader
         controllerElector.elect
       }
     }
@@ -1274,50 +1330,67 @@ class KafkaController(val config : KafkaConfig, zkUtils: ZkUtils, val brokerStat
     }
   }
 
+  /**
+    * 对失衡的Broker上相关的分区进行“优先副本”选举，使得相关分区的“优先副本”重新成为Leader副本，
+    * 整个集群中Leader副本的分布也会重新恢复平衡
+    */
   private def checkAndTriggerPartitionRebalance(): Unit = {
     if (isActive()) {
       trace("checking need to trigger partition rebalance")
       // get all the active brokers
+      // 获取所有可用的Broker的副本
       var preferredReplicasForTopicsByBrokers: Map[Int, Map[TopicAndPartition, Seq[Int]]] = null
       inLock(controllerContext.controllerLock) {
+        // 获取"优先副本"所在的BrokerId与分区的对应关系
         preferredReplicasForTopicsByBrokers =
-          controllerContext.partitionReplicaAssignment.filterNot(p => deleteTopicManager.isTopicQueuedUpForDeletion(p._1.topic)).groupBy {
+          controllerContext.partitionReplicaAssignment // 每个分区的AR集合，Map[TopicAndPartition, Seq[Int]]类型
+            .filterNot(p => deleteTopicManager.isTopicQueuedUpForDeletion(p._1.topic)) // 过滤掉即将被删除的主题的分区
+            .groupBy { // 通过该分区的AR集合第一个副本的ID（即Leader副本）进行分组
             case(topicAndPartition, assignedReplicas) => assignedReplicas.head
-          }
+          } // 结果为Map[Int, Map[TopicAndPartition, Seq[Int]]]类型，即Map[leaderBrokerId, Map[TopicAndPartition, Seq[TopicAndPartition BrokerId]]]
       }
       debug("preferred replicas by broker " + preferredReplicasForTopicsByBrokers)
       // for each broker, check if a preferred replica election needs to be triggered
+      // 计算每个Broker的imbalance比率
       preferredReplicasForTopicsByBrokers.foreach {
-        case(leaderBroker, topicAndPartitionsForBroker) => {
+        // 每一项为 Leader副本所在的Broker -> 该Broker上的分区
+        case(leaderBroker, topicAndPartitionsForBroker) => { // [leaderBrokerId, Map[TopicAndPartition, Seq[TopicAndPartition BrokerId]]]
           var imbalanceRatio: Double = 0
           var topicsNotInPreferredReplica: Map[TopicAndPartition, Seq[Int]] = null
           inLock(controllerContext.controllerLock) {
             topicsNotInPreferredReplica =
               topicAndPartitionsForBroker.filter {
                 case(topicPartition, replicas) => {
+                  // 该分区存在Leader副本
                   controllerContext.partitionLeadershipInfo.contains(topicPartition) &&
+                  // 该分区的Leader副本不是"优先副本"
                   controllerContext.partitionLeadershipInfo(topicPartition).leaderAndIsr.leader != leaderBroker
                 }
               }
             debug("topics not in preferred replica " + topicsNotInPreferredReplica)
+            // 当前Broker上分区的数量
             val totalTopicPartitionsForBroker = topicAndPartitionsForBroker.size
+            // 当前Broker上Leader副本不是"优先副本"的数量
             val totalTopicPartitionsNotLedByBroker = topicsNotInPreferredReplica.size
+            // 计算imbalance比率
             imbalanceRatio = totalTopicPartitionsNotLedByBroker.toDouble / totalTopicPartitionsForBroker
             trace("leader imbalance ratio for broker %d is %f".format(leaderBroker, imbalanceRatio))
           }
           // check ratio and if greater than desired ratio, trigger a rebalance for the topic partitions
           // that need to be on this broker
+          // Broker上的“imbalance”比率大于一定阈值时，触发“优先副本”选举
           if (imbalanceRatio > (config.leaderImbalancePerBrokerPercentage.toDouble / 100)) {
             topicsNotInPreferredReplica.foreach {
               case(topicPartition, replicas) => {
                 inLock(controllerContext.controllerLock) {
                   // do this check only if the broker is live and there are no partitions being reassigned currently
                   // and preferred replica election is not in progress
-                  if (controllerContext.liveBrokerIds.contains(leaderBroker) &&
-                      controllerContext.partitionsBeingReassigned.size == 0 &&
-                      controllerContext.partitionsUndergoingPreferredReplicaElection.size == 0 &&
-                      !deleteTopicManager.isTopicQueuedUpForDeletion(topicPartition.topic) &&
-                      controllerContext.allTopics.contains(topicPartition.topic)) {
+                  if (controllerContext.liveBrokerIds.contains(leaderBroker) && // Leader副本所在的Broker是可用的
+                      controllerContext.partitionsBeingReassigned.size == 0 && // 当前没有正在进行重新分配副本的分区
+                      controllerContext.partitionsUndergoingPreferredReplicaElection.size == 0 && // 当前没有正在进行“优先副本”选举的分区
+                      !deleteTopicManager.isTopicQueuedUpForDeletion(topicPartition.topic) && // 分区所属主题不是待删除主题
+                      controllerContext.allTopics.contains(topicPartition.topic)) { // ControllerContext中包含分区所属的主题
+                    // 触发"优先副本"选举
                     onPreferredReplicaElection(Set(topicPartition), true)
                   }
                 }
