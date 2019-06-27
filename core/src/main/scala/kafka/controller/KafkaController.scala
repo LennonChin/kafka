@@ -268,43 +268,53 @@ class KafkaController(val config : KafkaConfig, zkUtils: ZkUtils, val brokerStat
    */
   def shutdownBroker(id: Int) : Set[TopicAndPartition] = {
 
+    // 检查Controller是否存活
     if (!isActive()) {
       throw new ControllerMovedException("Controller moved to another broker. Aborting controlled shutdown")
     }
 
-    controllerContext.brokerShutdownLock synchronized {
+    controllerContext.brokerShutdownLock synchronized { // 加锁
       info("Shutting down broker " + id)
 
       inLock(controllerContext.controllerLock) {
+        // 检查Broker是否存活
         if (!controllerContext.liveOrShuttingDownBrokerIds.contains(id))
           throw new BrokerNotAvailableException("Broker id %d does not exist.".format(id))
 
+        // 将BrokerID添加到ControllerContext的shuttingDownBrokerIds中
         controllerContext.shuttingDownBrokerIds.add(id)
         debug("All shutting down brokers: " + controllerContext.shuttingDownBrokerIds.mkString(","))
         debug("Live brokers: " + controllerContext.liveBrokerIds.mkString(","))
       }
 
+      // 获取待关闭Broker上所有的Partition和副本信息
       val allPartitionsAndReplicationFactorOnBroker: Set[(TopicAndPartition, Int)] =
         inLock(controllerContext.controllerLock) {
-          controllerContext.partitionsOnBroker(id)
+          controllerContext.partitionsOnBroker(id) // 所有Partition
             .map(topicAndPartition => (topicAndPartition, controllerContext.partitionReplicaAssignment(topicAndPartition).size))
         }
 
-      allPartitionsAndReplicationFactorOnBroker.foreach {
+      allPartitionsAndReplicationFactorOnBroker.foreach { // 遍历待关闭的Broker上的分区
         case(topicAndPartition, replicationFactor) =>
           // Move leadership serially to relinquish lock.
           inLock(controllerContext.controllerLock) {
+            // 获取分区的Leader副本所在Broker的ID、ISR集合、年代信息
             controllerContext.partitionLeadershipInfo.get(topicAndPartition).foreach { currLeaderIsrAndControllerEpoch =>
-              if (replicationFactor > 1) {
+              if (replicationFactor > 1) { // 检查是否开启副本机制
                 if (currLeaderIsrAndControllerEpoch.leaderAndIsr.leader == id) {
                   // If the broker leads the topic partition, transition the leader and update isr. Updates zk and
                   // notifies all affected brokers
+                  /**
+                    * 将相关的分区切换为OnlinePartition状态，使用ControlledShutdownLeaderSelector重新选择Leader和ISR集合
+                    * 并将结果写入ZooKeeper，之后发送LeaderAndIsrRequest和UpdateMetadataRequest
+                    */
                   partitionStateMachine.handleStateChanges(Set(topicAndPartition), OnlinePartition,
                     controlledShutdownPartitionLeaderSelector)
                 } else {
                   // Stop the replica first. The state change below initiates ZK changes which should take some time
                   // before which the stop replica request should be completed (in most cases)
                   try {
+                    // 发送StopReplicaRequest（不删除副本）
                     brokerRequestBatch.newBatch()
                     brokerRequestBatch.addStopReplicaRequestForBrokers(Seq(id), topicAndPartition.topic,
                       topicAndPartition.partition, deletePartition = false)
@@ -320,6 +330,7 @@ class KafkaController(val config : KafkaConfig, zkUtils: ZkUtils, val brokerStat
                     }
                   }
                   // If the broker is a follower, updates the isr in ZK and notifies the current leader
+                  // 将副本转换为OfflineReplica状态
                   replicaStateMachine.handleStateChanges(Set(PartitionAndReplica(topicAndPartition.topic,
                     topicAndPartition.partition, id)), OfflineReplica)
                 }
@@ -327,6 +338,8 @@ class KafkaController(val config : KafkaConfig, zkUtils: ZkUtils, val brokerStat
             }
           }
       }
+
+      // 该方法用于统计Leader副本依然处于待关闭Broker上的分区
       def replicatedPartitionsBrokerLeads() = inLock(controllerContext.controllerLock) {
         trace("All leaders = " + controllerContext.partitionLeadershipInfo.mkString(","))
         controllerContext.partitionLeadershipInfo.filter {
@@ -334,6 +347,8 @@ class KafkaController(val config : KafkaConfig, zkUtils: ZkUtils, val brokerStat
             leaderIsrAndControllerEpoch.leaderAndIsr.leader == id && controllerContext.partitionReplicaAssignment(topicAndPartition).size > 1
         }.map(_._1)
       }
+
+      // 统计Leader副本依然处于待关闭Broker上的分区，转换为Set后返回
       replicatedPartitionsBrokerLeads().toSet
     }
   }
