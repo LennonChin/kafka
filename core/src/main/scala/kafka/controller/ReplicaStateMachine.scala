@@ -191,12 +191,12 @@ class ReplicaStateMachine(controller: KafkaController) extends Logging {
           // 检查前置状态是否合理，必须是NonExistentReplica
           assertValidPreviousStates(partitionAndReplica, List(NonExistentReplica), targetState)
           // start replica as a follower to the current leader for its partition
-          // 获取分区的Leader、ISR、Controller年代等信息
+          // 获取分区的Leader副本、ISR集合、Controller年代等信息
           val leaderIsrAndControllerEpochOpt = ReplicationUtils.getLeaderIsrAndEpochForPartition(zkUtils, topic, partition)
           leaderIsrAndControllerEpochOpt match {
-            // 能够获取到Leader、ISR等信息
+            // 能够获取到Leader副本、ISR等信息
             case Some(leaderIsrAndControllerEpoch) =>
-              // 当前分区是Leader分区，Leader副本不可以处于NewReplica状态
+              // 当前副本是Leader副本，Leader副本不可以处于NewReplica状态
               if(leaderIsrAndControllerEpoch.leaderAndIsr.leader == replicaId)
                 throw new StateChangeFailedException("Replica %d for partition %s cannot be moved to NewReplica"
                   .format(replicaId, topicAndPartition) + "state as it is being requested to become leader")

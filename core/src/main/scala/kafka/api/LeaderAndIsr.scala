@@ -32,6 +32,12 @@ object LeaderAndIsr {
   val LeaderDuringDelete = -2
 }
 
+/**
+  * @param leader Leader副本所在的Broker的ID
+  * @param leaderEpoch Leader的年代信息
+  * @param isr ISR集合
+  * @param zkVersion Zookeeper中存储的版本信息
+  */
 case class LeaderAndIsr(var leader: Int, var leaderEpoch: Int, var isr: List[Int], var zkVersion: Int) {
   def this(leader: Int, isr: List[Int]) = this(leader, LeaderAndIsr.initialLeaderEpoch, isr, LeaderAndIsr.initialZKVersion)
 

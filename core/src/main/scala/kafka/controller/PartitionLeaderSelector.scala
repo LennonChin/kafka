@@ -40,20 +40,20 @@ trait PartitionLeaderSelector {
 }
 
 /**
- * Select the new leader, new isr and receiving replicas (for the LeaderAndIsrRequest):
- * 1. If at least one broker from the isr is alive, it picks a broker from the live isr as the new leader and the live
- *    isr as the new isr.
- * 2. Else, if unclean leader election for the topic is disabled, it throws a NoReplicaOnlineException.
- * 3. Else, it picks some alive broker from the assigned replica list as the new leader and the new isr.
- * 4. If no broker in the assigned replica list is alive, it throws a NoReplicaOnlineException
- * Replicas to receive LeaderAndIsr request = live assigned replicas
- * Once the leader is successfully registered in zookeeper, it updates the allLeaders cache
+  * Select the new leader, new isr and receiving replicas (for the LeaderAndIsrRequest):
+  * 1. If at least one broker from the isr is alive, it picks a broker from the live isr as the new leader and the live
+  *    isr as the new isr.
+  * 2. Else, if unclean leader election for the topic is disabled, it throws a NoReplicaOnlineException.
+  * 3. Else, it picks some alive broker from the assigned replica list as the new leader and the new isr.
+  * 4. If no broker in the assigned replica list is alive, it throws a NoReplicaOnlineException
+  * Replicas to receive LeaderAndIsr request = live assigned replicas
+  * Once the leader is successfully registered in zookeeper, it updates the allLeaders cache
   *
   * 1. 如果在ISR集合中存在至少一个可用的副本，则从ISR集合中选择新的Leader副本，当前ISR集合为新ISR集合。
   * 2. 如果ISR集合中没有可用的副本且“Unclean leader election”配置被禁用，那么就抛出异常。
   * 3. 如果“Unclean leader election”被开启，则从AR集合中选择新的Leader副本和ISR集合。
   * 4. 如果AR集合中没有可用的副本，抛出异常。
- */
+  */
 class OfflinePartitionLeaderSelector(controllerContext: ControllerContext, config: KafkaConfig)
   extends PartitionLeaderSelector with Logging {
   this.logIdent = "[OfflinePartitionLeaderSelector]: "
@@ -98,7 +98,7 @@ class OfflinePartitionLeaderSelector(controllerContext: ControllerContext, confi
                 // 选择AR集合可用副本的第一个作为Leader副本
                 val newLeader = liveAssignedReplicas.head
                 warn("No broker in ISR is alive for %s. Elect leader %d from live brokers %s. There's potential data loss."
-                     .format(topicAndPartition, newLeader, liveAssignedReplicas.mkString(",")))
+                  .format(topicAndPartition, newLeader, liveAssignedReplicas.mkString(",")))
                 // 构造LeaderAndIsr对象，有新Leader副本、Leader年代信息 + 1、ISR集合只有新Leader副本，当前Leader的zkVersion + 1
                 new LeaderAndIsr(newLeader, currentLeaderEpoch + 1, List(newLeader), currentLeaderIsrZkPathVersion + 1)
             }
@@ -107,7 +107,7 @@ class OfflinePartitionLeaderSelector(controllerContext: ControllerContext, confi
             val liveReplicasInIsr = liveAssignedReplicas.filter(r => liveBrokersInIsr.contains(r))
             val newLeader = liveReplicasInIsr.head
             debug("Some broker in ISR is alive for %s. Select %d from ISR %s to be the leader."
-                  .format(topicAndPartition, newLeader, liveBrokersInIsr.mkString(",")))
+              .format(topicAndPartition, newLeader, liveBrokersInIsr.mkString(",")))
             // 构造LeaderAndIsr对象，有新Leader副本、Leader年代信息 + 1、新的ISR集合，当前Leader的zkVersion + 1
             new LeaderAndIsr(newLeader, currentLeaderEpoch + 1, liveBrokersInIsr.toList, currentLeaderIsrZkPathVersion + 1)
         }

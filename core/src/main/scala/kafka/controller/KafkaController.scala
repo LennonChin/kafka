@@ -1653,16 +1653,28 @@ class PreferredReplicaElectionListener(controller: KafkaController) extends IZkD
   }
 }
 
-//封装了新分配的AR集合信息以及用于监听ISR集合变化的ReassignedPartitionsIsrChangeListener监听器
+/**
+  * @param newReplicas 新分配的AR集合信息
+  * @param isrChangeListener 用于监听ISR集合变化的ReassignedPartitionsIsrChangeListener监听器
+  */
 case class ReassignedPartitionsContext(var newReplicas: Seq[Int] = Seq.empty,
                                        var isrChangeListener: ReassignedPartitionsIsrChangeListener = null)
 
+/**
+  * @param topic 主题
+  * @param partition 分区
+  * @param replica 副本
+  */
 case class PartitionAndReplica(topic: String, partition: Int, replica: Int) {
   override def toString(): String = {
     "[Topic=%s,Partition=%d,Replica=%d]".format(topic, partition, replica)
   }
 }
 
+/**
+  * @param leaderAndIsr 记录了Leader副本所在的Broker的ID、ISR集合
+  * @param controllerEpoch 记录了Controller年代信息
+  */
 case class LeaderIsrAndControllerEpoch(leaderAndIsr: LeaderAndIsr, controllerEpoch: Int) {
   override def toString(): String = {
     val leaderAndIsrInfo = new StringBuilder

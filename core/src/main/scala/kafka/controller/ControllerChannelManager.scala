@@ -39,8 +39,8 @@ import scala.collection.mutable.HashMap
 
 /**
   * KafkaController使用ControllerChannelManager管理其与集群中各个Broker之间的网络交互
-  * @param controllerContext
-  * @param config
+  * @param controllerContext KafkaController上下文
+  * @param config 配置信息
   * @param time
   * @param metrics
   * @param threadNamePrefix
@@ -48,6 +48,7 @@ import scala.collection.mutable.HashMap
 class ControllerChannelManager(controllerContext: ControllerContext, config: KafkaConfig, time: Time, metrics: Metrics, threadNamePrefix: Option[String] = None) extends Logging {
   // 用于管理集群中每个Broker对应的ControllerBrokerStateInfo对象
   protected val brokerStateInfo = new HashMap[Int, ControllerBrokerStateInfo]
+  // 操作brokerStateInfo使用的锁
   private val brokerLock = new Object
   this.logIdent = "[Channel manager on controller " + config.brokerId + "]: "
 
@@ -320,7 +321,7 @@ class ControllerBrokerRequestBatch(controller: KafkaController) extends  Logging
   val updateMetadataRequestMap = mutable.Map.empty[Int, mutable.Map[TopicPartition, PartitionStateInfo]]
   private val stateChangeLogger = KafkaController.stateChangeLogger
 
-  // 用于检测leaderAndIsrRequestMap、stopReplicaRequestMap、updateMetadataRequestMap，有一个为空就会抛出异常
+  // 用于检测leaderAndIsrRequestMap、stopReplicaRequestMap、updateMetadataRequestMap，有一个不为空就会抛出异常
   def newBatch() {
     // raise error if the previous batch is not empty
     if (leaderAndIsrRequestMap.size > 0)
@@ -588,6 +589,11 @@ case class ControllerBrokerStateInfo(networkClient: NetworkClient,
                                      messageQueue: BlockingQueue[QueueItem],
                                      requestSendThread: RequestSendThread)
 
+/**
+  * @param replica 分区及副本信息
+  * @param deletePartition 是否删除分区
+  * @param callback 回调
+  */
 case class StopReplicaRequestInfo(replica: PartitionAndReplica, deletePartition: Boolean, callback: AbstractRequestResponse => Unit = null)
 
 class Callbacks private (var leaderAndIsrResponseCallback: AbstractRequestResponse => Unit = null,
