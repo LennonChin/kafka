@@ -189,11 +189,19 @@ object KafkaController extends Logging {
   }
 }
 
+/**
+  * @param config 配置信息
+  * @param zkUtils Zookeeper工具
+  * @param brokerState 当前KafkaController所处的Broker的状态
+  */
 class KafkaController(val config : KafkaConfig, zkUtils: ZkUtils, val brokerState: BrokerState, time: Time, metrics: Metrics, threadNamePrefix: Option[String] = None) extends Logging with KafkaMetricsGroup {
   this.logIdent = "[Controller " + config.brokerId + "]: "
+  // 标识当前KafkaController是否在运行
   private var isRunning = true
   private val stateChangeLogger = KafkaController.stateChangeLogger
+  // 当前KafkaController依赖的ControllerContext对象
   val controllerContext = new ControllerContext(zkUtils, config.zkSessionTimeoutMs)
+  // 当前KafkaController依赖的分区状态机及副本状态机
   val partitionStateMachine = new PartitionStateMachine(this)
   val replicaStateMachine = new ReplicaStateMachine(this)
   // Controller Leader选举器
@@ -201,16 +209,24 @@ class KafkaController(val config : KafkaConfig, zkUtils: ZkUtils, val brokerStat
     onControllerResignation, config.brokerId)
   // have a separate scheduler for the controller to be able to start and stop independently of the
   // kafka server
+  // 分区自动均衡任务的调度器
   private val autoRebalanceScheduler = new KafkaScheduler(1)
+  // 主题删除操作管理器
   var deleteTopicManager: TopicDeletionManager = null
+  // Leader副本选举器
   val offlinePartitionSelector = new OfflinePartitionLeaderSelector(controllerContext, config)
   private val reassignedPartitionLeaderSelector = new ReassignedPartitionLeaderSelector(controllerContext)
   private val preferredReplicaPartitionLeaderSelector = new PreferredReplicaPartitionLeaderSelector(controllerContext)
   private val controlledShutdownPartitionLeaderSelector = new ControlledShutdownLeaderSelector(controllerContext)
+
+  // 请求批量发送器
   private val brokerRequestBatch = new ControllerBrokerRequestBatch(this)
 
+  // 分区重分配监听器
   private val partitionReassignedListener = new PartitionsReassignedListener(this)
+  // "优先副本"选举监听器
   private val preferredReplicaElectionListener = new PreferredReplicaElectionListener(this)
+  // ISR变化监听器
   private val isrChangeNotificationListener = new IsrChangeNotificationListener(this)
 
   newGauge(
@@ -428,11 +444,11 @@ class KafkaController(val config : KafkaConfig, zkUtils: ZkUtils, val brokerStat
   }
 
   /**
-   * This callback is invoked by the zookeeper leader elector when the current broker resigns as the controller. This is
-   * required to clean up internal controller data structures
+    * This callback is invoked by the zookeeper leader elector when the current broker resigns as the controller. This is
+    * required to clean up internal controller data structures
     * 当LeaderChangeListener监听到/controller中的数据被删除或改变时，
     * 旧的Controller Leader需要调用onControllerResignation()回调函数进行一些清理工作
-   */
+    */
   def onControllerResignation() {
     debug("Controller resigning, broker id %d".format(config.brokerId))
     // de-register listeners
