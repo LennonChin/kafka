@@ -70,19 +70,23 @@ object ReplicationUtils extends Logging {
   }
 
   def getLeaderIsrAndEpochForPartition(zkUtils: ZkUtils, topic: String, partition: Int):Option[LeaderIsrAndControllerEpoch] = {
+    // 根据主题和分区构建路径，即/brokers/topics/[topic_name]/partitions/[partition_id]/state
     val leaderAndIsrPath = getTopicPartitionLeaderAndIsrPath(topic, partition)
+    // 从Zookeeper读取数据
     val (leaderAndIsrOpt, stat) = zkUtils.readDataMaybeNull(leaderAndIsrPath)
+    // 将数据解析并构造为LeaderIsrAndControllerEpoch对象
     leaderAndIsrOpt.flatMap(leaderAndIsrStr => parseLeaderAndIsr(leaderAndIsrStr, leaderAndIsrPath, stat))
   }
 
+  // 解析从Zookeeper中读取的Leader及ISR数据
   private def parseLeaderAndIsr(leaderAndIsrStr: String, path: String, stat: Stat)
       : Option[LeaderIsrAndControllerEpoch] = {
     Json.parseFull(leaderAndIsrStr).flatMap {m =>
       val leaderIsrAndEpochInfo = m.asInstanceOf[Map[String, Any]]
-      val leader = leaderIsrAndEpochInfo.get("leader").get.asInstanceOf[Int]
-      val epoch = leaderIsrAndEpochInfo.get("leader_epoch").get.asInstanceOf[Int]
-      val isr = leaderIsrAndEpochInfo.get("isr").get.asInstanceOf[List[Int]]
-      val controllerEpoch = leaderIsrAndEpochInfo.get("controller_epoch").get.asInstanceOf[Int]
+      val leader = leaderIsrAndEpochInfo.get("leader").get.asInstanceOf[Int] // Leader ID
+      val epoch = leaderIsrAndEpochInfo.get("leader_epoch").get.asInstanceOf[Int] // Leader年代信息
+      val isr = leaderIsrAndEpochInfo.get("isr").get.asInstanceOf[List[Int]] // ISR集合
+      val controllerEpoch = leaderIsrAndEpochInfo.get("controller_epoch").get.asInstanceOf[Int] // Controller年代信息
       val zkPathVersion = stat.getVersion
       debug("Leader %d, Epoch %d, Isr %s, Zk path version %d for leaderAndIsrPath %s".format(leader, epoch,
         isr.toString(), zkPathVersion, path))

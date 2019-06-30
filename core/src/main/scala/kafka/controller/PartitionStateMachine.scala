@@ -85,8 +85,10 @@ class PartitionStateMachine(controller: KafkaController) extends Logging {
 
   // register topic and partition change listeners
   def registerListeners() {
+    // 注册TopicChangeListener
     registerTopicChangeListener()
-    if(controller.config.deleteTopicEnable)
+    if(controller.config.deleteTopicEnable) // 判断是否开启了主题删除功能
+      // 注册DeleteTopicListener
       registerDeleteTopicListener()
   }
 
@@ -461,6 +463,7 @@ class PartitionStateMachine(controller: KafkaController) extends Logging {
     debug("After leader election, leader cache is updated to %s".format(controllerContext.partitionLeadershipInfo.map(l => (l._1, l._2))))
   }
 
+  // 注册TopicChangeListener监听器，监听路径为/brokers/topics
   private def registerTopicChangeListener() = {
     zkUtils.zkClient.subscribeChildChanges(BrokerTopicsPath, topicChangeListener)
   }
@@ -482,6 +485,7 @@ class PartitionStateMachine(controller: KafkaController) extends Logging {
     partitionModificationsListeners.remove(topic)
   }
 
+  // 注册DeleteTopicListener监听器，监听路径为/admin/delete_topics
   private def registerDeleteTopicListener() = {
     zkUtils.zkClient.subscribeChildChanges(DeleteTopicsPath, deleteTopicsListener)
   }

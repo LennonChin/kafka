@@ -97,18 +97,22 @@ object ZkUtils {
 
   /*
    * Get calls that only depend on static paths
+   * 得到/brokers/topics/[topic_name]
    */
   def getTopicPath(topic: String): String = {
     ZkUtils.BrokerTopicsPath + "/" + topic
   }
 
+  // 得到/brokers/topics/[topic_name]/partitions
   def getTopicPartitionsPath(topic: String): String = {
     getTopicPath(topic) + "/partitions"
   }
 
+  // 得到/brokers/topics/[topic_name]/partitions/[partition_id]
   def getTopicPartitionPath(topic: String, partitionId: Int): String =
     getTopicPartitionsPath(topic) + "/" + partitionId
 
+  // 得到/brokers/topics/[topic_name]/partitions/[partition_id]/state
   def getTopicPartitionLeaderAndIsrPath(topic: String, partitionId: Int): String =
     getTopicPartitionPath(topic, partitionId) + "/" + "state"
 
@@ -157,7 +161,9 @@ class ZkUtils(val zkClient: ZkClient,
   def getSortedBrokerList(): Seq[Int] =
     getChildren(BrokerIdsPath).map(_.toInt).sorted
 
+  // 获取集群中所有的Broker
   def getAllBrokersInCluster(): Seq[Broker] = {
+    // 从Zookeeper的/brokers/ids路径读取
     val brokerIds = getChildrenParentMayNotExist(BrokerIdsPath).sorted
     brokerIds.map(_.toInt).map(getBrokerInfo(_)).filter(_.isDefined).map(_.get)
   }
@@ -592,7 +598,9 @@ class ZkUtils(val zkClient: ZkClient,
   def getPartitionLeaderAndIsrForTopics(zkClient: ZkClient, topicAndPartitions: Set[TopicAndPartition])
   : mutable.Map[TopicAndPartition, LeaderIsrAndControllerEpoch] = {
     val ret = new mutable.HashMap[TopicAndPartition, LeaderIsrAndControllerEpoch]
+    // 遍历传入的分区集合
     for(topicAndPartition <- topicAndPartitions) {
+      // 该过程会构造Zookeeper路径，并读取该路径的信息，构造为LeaderIsrAndControllerEpoch对象返回
       ReplicationUtils.getLeaderIsrAndEpochForPartition(this, topicAndPartition.topic, topicAndPartition.partition) match {
         case Some(leaderIsrAndControllerEpoch) => ret.put(topicAndPartition, leaderIsrAndControllerEpoch)
         case None =>
@@ -601,17 +609,24 @@ class ZkUtils(val zkClient: ZkClient,
     ret
   }
 
+  // 获取主题的每个分区的AR集合
   def getReplicaAssignmentForTopics(topics: Seq[String]): mutable.Map[TopicAndPartition, Seq[Int]] = {
+    // 构造HashMap存储结果
     val ret = new mutable.HashMap[TopicAndPartition, Seq[Int]]
-    topics.foreach { topic =>
+    topics.foreach { topic => // 遍历主题集合
+      // 从路径/brokers/topics/[topic_name]读取分区数据
       val jsonPartitionMapOpt = readDataMaybeNull(getTopicPath(topic))._1
       jsonPartitionMapOpt match {
-        case Some(jsonPartitionMap) =>
+        case Some(jsonPartitionMap) => // 存在分区数据
+          // 解析分区数据
           Json.parseFull(jsonPartitionMap) match {
             case Some(m) => m.asInstanceOf[Map[String, Any]].get("partitions") match {
               case Some(repl)  =>
+                // 对应结构为[partitionId, Seq[副本所在的BrokerID]]
                 val replicaMap = repl.asInstanceOf[Map[String, Seq[Int]]]
+                // 遍历字典结构
                 for((partition, replicas) <- replicaMap){
+                  // 最终得到的结果为[主题分区, Seq[副本所在的BrokerID]]
                   ret.put(TopicAndPartition(topic, partition.toInt), replicas)
                   debug("Replicas assigned to topic [%s], partition [%s] are [%s]".format(topic, partition, replicas))
                 }
@@ -737,8 +752,10 @@ class ZkUtils(val zkClient: ZkClient,
 
   def getPartitionsUndergoingPreferredReplicaElection(): Set[TopicAndPartition] = {
     // read the partitions and their new replica list
+    // 从/admin/preferred_replica_election读取需要进行"优先副本"选举的分区信息
     val jsonPartitionListOpt = readDataMaybeNull(PreferredReplicaLeaderElectionPath)._1
     jsonPartitionListOpt match {
+      // 解析数据
       case Some(jsonPartitionList) => PreferredReplicaLeaderElectionCommand.parsePreferredReplicaElectionData(jsonPartitionList)
       case None => Set.empty[TopicAndPartition]
     }
@@ -813,7 +830,9 @@ class ZkUtils(val zkClient: ZkClient,
     }
   }
 
+  // 获取集群中所有的主题
   def getAllTopics(): Seq[String] = {
+    // 从Zookeeper的/brokers/topics路径读取
     val topics = getChildrenParentMayNotExist(BrokerTopicsPath)
     if(topics == null)
       Seq.empty[String]

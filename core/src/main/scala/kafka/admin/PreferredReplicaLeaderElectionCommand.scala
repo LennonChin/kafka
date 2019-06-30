@@ -84,9 +84,10 @@ object PreferredReplicaLeaderElectionCommand extends Logging {
         m.asInstanceOf[Map[String, Any]].get("partitions") match {
           case Some(partitionsList) =>
             val partitionsRaw = partitionsList.asInstanceOf[List[Map[String, Any]]]
+            // 遍历得到对应的TopicAndPartition对象集合
             val partitions = partitionsRaw.map { p =>
-              val topic = p.get("topic").get.asInstanceOf[String]
-              val partition = p.get("partition").get.asInstanceOf[Int]
+              val topic = p.get("topic").get.asInstanceOf[String] // 分区所属主题
+              val partition = p.get("partition").get.asInstanceOf[Int] // 分区ID
               TopicAndPartition(topic, partition)
             }
             val duplicatePartitions = CoreUtils.duplicates(partitions)

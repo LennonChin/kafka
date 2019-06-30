@@ -84,7 +84,7 @@ class ZookeeperLeaderElector(controllerContext: ControllerContext,
      * it's possible that the controller has already been elected when we get here. This check will prevent the following
      * createEphemeralPath method from getting into an infinite loop if this broker is already the controller.
      */
-    if(leaderId != -1) { // 1️⃣存在Controller Leader，放弃选举
+    if(leaderId != -1) { // 存在Controller Leader，放弃选举
        debug("Broker %d has been elected as leader, so stopping the election process.".format(leaderId))
        return amILeader
     }
