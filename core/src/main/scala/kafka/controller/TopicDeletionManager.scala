@@ -200,7 +200,7 @@ class TopicDeletionManager(controller: KafkaController,
   def markTopicIneligibleForDeletion(topics: Set[String]) {
     if(isDeleteTopicEnabled) { // 判断是否开启了主题删除功能
       val newTopicsToHaltDeletion = topicsToBeDeleted & topics
-      // 添加到topicsIneligibleForDeletion
+      // 将传入的主题添加到topicsIneligibleForDeletion集合中，即表示他们不可被删除
       topicsIneligibleForDeletion ++= newTopicsToHaltDeletion
       if(newTopicsToHaltDeletion.size > 0)
         info("Halted deletion of topics %s".format(newTopicsToHaltDeletion.mkString(",")))

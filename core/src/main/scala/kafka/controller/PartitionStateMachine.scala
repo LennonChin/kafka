@@ -472,8 +472,10 @@ class PartitionStateMachine(controller: KafkaController) extends Logging {
     zkUtils.zkClient.unsubscribeChildChanges(BrokerTopicsPath, topicChangeListener)
   }
 
+  // 为指定主题注册PartitionModificationsListener监听器
   def registerPartitionChangeListener(topic: String) = {
     partitionModificationsListeners.put(topic, new PartitionModificationsListener(topic))
+    // 向Zookeeper的/brokers/topics/[topic_name]路径注册PartitionModificationsListener监听器
     zkUtils.zkClient.subscribeDataChanges(getTopicPath(topic), partitionModificationsListeners(topic))
   }
 
@@ -558,7 +560,7 @@ class PartitionStateMachine(controller: KafkaController) extends Logging {
     *
     * 主题删除操作监听器
     * 1. 当被删除的主题存在时，将其添加到记录删除主题的缓存中；
-    * 2. 当由主题被删除时，会通知DeleteTopicThread线程
+    * 2. 当有主题被删除时，会通知DeleteTopicThread线程
    */
   class DeleteTopicsListener() extends IZkChildListener with Logging {
     this.logIdent = "[DeleteTopicsListener on " + controller.config.brokerId + "]: "
