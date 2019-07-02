@@ -86,6 +86,7 @@ class TopicDeletionManager(controller: KafkaController,
   // 记录将要被删除的分区集合
   val partitionsToBeDeleted: mutable.Set[TopicAndPartition] = topicsToBeDeleted.flatMap(controllerContext.partitionsForTopic)
   val deleteLock = new ReentrantLock()
+  // 记录不可被删除的主题
   val topicsIneligibleForDeletion: mutable.Set[String] = mutable.Set.empty[String] ++
     (initialTopicsIneligibleForDeletion & initialTopicsToBeDeleted)
   // 用于其他线程与deleteTopicsThread删除线程同步
@@ -318,7 +319,7 @@ class TopicDeletionManager(controller: KafkaController,
   private def completeDeleteTopic(topic: String) {
     // deregister partition change listener on the deleted topic. This is to prevent the partition change listener
     // firing before the new topic listener when a deleted topic gets auto created
-    // 移除即将被删除的主题上的监听器
+    // 移除即将被删除的主题上的PartitionModificationsListener监听器
     partitionStateMachine.deregisterPartitionChangeListener(topic)
     // 从副本状态机中获取所有状态为ReplicaDeletionSuccessful的副本集
     val replicasForDeletedTopic = controller.replicaStateMachine.replicasInState(topic, ReplicaDeletionSuccessful)
@@ -398,10 +399,14 @@ class TopicDeletionManager(controller: KafkaController,
       // 将不可用副本转换为ReplicaDeletionIneligible状态
       replicaStateMachine.handleStateChanges(deadReplicasForTopic, ReplicaDeletionIneligible)
       // send stop replica to all followers that are not in the OfflineReplica state so they stop sending fetch requests to the leader
-      // 将待删除的副本转换为OfflineReplica状态
+      /**
+        * 将待删除的副本转换为OfflineReplica状态，
+        * 此步骤会发送StopReplicaRequest到待删除的副本（不会删除副本），
+        * 同时还会向可用的Broker发送LeaderAndIsrRequest和UpdateMetadataRequest，将副本从ISR集合中删除
+        */
       replicaStateMachine.handleStateChanges(replicasForDeletionRetry, OfflineReplica)
       debug("Deletion started for replicas %s".format(replicasForDeletionRetry.mkString(",")))
-      // 将待删除的副本转换为ReplicaDeletionStarted状态
+      // 将待删除的副本转换为ReplicaDeletionStarted状态，此步骤会向可用副本发送StopReplicaRequest（删除副本）
       controller.replicaStateMachine.handleStateChanges(replicasForDeletionRetry, ReplicaDeletionStarted,
         // 注意这里使用到了deleteTopicStopReplicaCallback回调函数
         new Callbacks.CallbackBuilder().stopReplicaCallback(deleteTopicStopReplicaCallback).build)

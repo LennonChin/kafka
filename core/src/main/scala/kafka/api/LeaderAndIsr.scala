@@ -29,7 +29,7 @@ object LeaderAndIsr {
   val initialLeaderEpoch: Int = 0
   val initialZKVersion: Int = 0
   val NoLeader = -1
-  val LeaderDuringDelete = -2
+  val LeaderDuringDelete = -2 // 需要删除Topic时使用
 }
 
 /**

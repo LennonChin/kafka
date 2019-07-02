@@ -334,6 +334,7 @@ class ReplicaStateMachine(controller: KafkaController) extends Logging {
     }
   }
 
+  // 判断主题的所有副本是否都处于ReplicaDeletionSuccessful状态
   def areAllReplicasForTopicDeleted(topic: String): Boolean = {
     // 获取主题的副本集合
     val replicasForTopic = controller.controllerContext.replicasForTopic(topic)
@@ -344,6 +345,7 @@ class ReplicaStateMachine(controller: KafkaController) extends Logging {
     replicaStatesForTopic.forall(_._2 == ReplicaDeletionSuccessful)
   }
 
+  // 判断主题是否至少有一个副本处于ReplicaDeletionStarted状态
   def isAtLeastOneReplicaInDeletionStartedState(topic: String): Boolean = {
     val replicasForTopic = controller.controllerContext.replicasForTopic(topic)
     val replicaStatesForTopic = replicasForTopic.map(r => (r, replicaState(r))).toMap
@@ -354,6 +356,7 @@ class ReplicaStateMachine(controller: KafkaController) extends Logging {
     replicaState.filter(r => r._1.topic.equals(topic) && r._2 == state).keySet
   }
 
+  // 判断主题是否有副本处于特定的状态
   def isAnyReplicaInState(topic: String, state: ReplicaState): Boolean = {
     replicaState.exists(r => r._1.topic.equals(topic) && r._2 == state)
   }

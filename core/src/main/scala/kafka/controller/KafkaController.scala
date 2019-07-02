@@ -1602,6 +1602,14 @@ class PartitionsReassignedListener(controller: KafkaController) extends IZkDataL
   }
 }
 
+/**
+  * 每个分区都会注册一个对应的ReassignedPartitionsIsrChangeListener监听器
+  * 监听路径为/broker/topics/[topic_name]/partitions/[partitionId]/state
+  * @param controller KafkaController
+  * @param topic 主题
+  * @param partition 分区
+  * @param reassignedReplicas 新分配的AR集合
+  */
 class ReassignedPartitionsIsrChangeListener(controller: KafkaController, topic: String, partition: Int,
                                             reassignedReplicas: Set[Int])
   extends IZkDataListener with Logging {
@@ -1620,18 +1628,24 @@ class ReassignedPartitionsIsrChangeListener(controller: KafkaController, topic: 
       val topicAndPartition = TopicAndPartition(topic, partition)
       try {
         // check if this partition is still being reassigned or not
+        // 判断当前监听器所绑定的分区是否正在进行副本重新分配
         controllerContext.partitionsBeingReassigned.get(topicAndPartition) match {
-          case Some(reassignedPartitionContext) =>
+          case Some(reassignedPartitionContext) => // 正在进行
             // need to re-read leader and isr from zookeeper since the zkclient callback doesn't return the Stat object
+            // 从Zookeeper中获取当前分区的Leader副本、ISR集合等信息
             val newLeaderAndIsrOpt = zkUtils.getLeaderAndIsrForPartition(topic, partition)
-            newLeaderAndIsrOpt match {
+            newLeaderAndIsrOpt match { // Zookeeper中能获取到Leader相关信息
               case Some(leaderAndIsr) => // check if new replicas have joined ISR
+                // 检查RAR集合中的所有副本是否已经加入了ISR集合
+                // 取RAR与ISR的并集
                 val caughtUpReplicas = reassignedReplicas & leaderAndIsr.isr.toSet
+                // 检查RAR与上述并集是否相同，如果相同说明RAR的副本都进入了ISR集合
                 if(caughtUpReplicas == reassignedReplicas) {
                   // resume the partition reassignment process
                   info("%d/%d replicas have caught up with the leader for partition %s being reassigned."
                     .format(caughtUpReplicas.size, reassignedReplicas.size, topicAndPartition) +
                     "Resuming partition reassignment")
+                  // RAR集合的副本都进入了ISR集合，进行副本重分配操作
                   controller.onPartitionReassignment(topicAndPartition, reassignedPartitionContext)
                 }
                 else {
@@ -1642,7 +1656,7 @@ class ReassignedPartitionsIsrChangeListener(controller: KafkaController, topic: 
               case None => error("Error handling reassignment of partition %s to replicas %s as it was never created"
                 .format(topicAndPartition, reassignedReplicas.mkString(",")))
             }
-          case None =>
+          case None => // 没有进行，结束操作
         }
       } catch {
         case e: Throwable => error("Error while handling partition reassignment", e)
