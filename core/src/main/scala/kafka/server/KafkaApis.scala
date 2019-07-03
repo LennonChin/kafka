@@ -133,13 +133,15 @@ class KafkaApis(val requestChannel: RequestChannel,
         // for each new leader or follower, call coordinator to handle consumer group migration.
         // this callback is invoked under the replica state change lock to ensure proper order of
         // leadership changes
-        // 处理Group迁移
+        // 处理GroupCoordinator的迁移
         updatedLeaders.foreach { partition =>
-          if (partition.topic == TopicConstants.GROUP_METADATA_TOPIC_NAME)
+          if (partition.topic == TopicConstants.GROUP_METADATA_TOPIC_NAME) // 主题为__consumer_offsets
+            // Broker成为Offsets Topic分区的Leader副本时调用
             coordinator.handleGroupImmigration(partition.partitionId)
         }
         updatedFollowers.foreach { partition =>
-          if (partition.topic == TopicConstants.GROUP_METADATA_TOPIC_NAME)
+          if (partition.topic == TopicConstants.GROUP_METADATA_TOPIC_NAME) // 主题为__consumer_offsets
+          // Broker成为Offsets Topic分区的Follower副本时调用
             coordinator.handleGroupEmigration(partition.partitionId)
         }
       }
@@ -902,36 +904,47 @@ class KafkaApis(val requestChannel: RequestChannel,
     requestChannel.sendResponse(new Response(request, new ResponseSend(request.connectionId, responseHeader, offsetFetchResponse)))
   }
 
+  // 负责处理GroupCoordinatorRequest，查询管理消费者所属的Consumer Group对应的GroupCoordinator的网络位置
   def handleGroupCoordinatorRequest(request: RequestChannel.Request) {
+    // 转换请求为GroupCoordinatorRequest对象
     val groupCoordinatorRequest = request.body.asInstanceOf[GroupCoordinatorRequest]
+    // 根据correlationId构造请求头
     val responseHeader = new ResponseHeader(request.header.correlationId)
 
-    if (!authorize(request.session, Describe, new Resource(Group, groupCoordinatorRequest.groupId))) {
+    if (!authorize(request.session, Describe, new Resource(Group, groupCoordinatorRequest.groupId))) { // 检查授权情况
+      // 未授权，返回GROUP_AUTHORIZATION_FAILED错误码，Node节点被置为NO_NODE
       val responseBody = new GroupCoordinatorResponse(Errors.GROUP_AUTHORIZATION_FAILED.code, Node.noNode)
       requestChannel.sendResponse(new RequestChannel.Response(request, new ResponseSend(request.connectionId, responseHeader, responseBody)))
     } else {
+      // 通过groupId得到对应的Offsets Topic分区的ID
       val partition = coordinator.partitionFor(groupCoordinatorRequest.groupId)
 
       // get metadata (and create the topic if necessary)
+      // 从MetadataCache中获取Offsets Topic的相关信息，如果Offsets Topic未创建则会创建
       val offsetsTopicMetadata = getOrCreateGroupMetadataTopic(request.securityProtocol)
 
-      val responseBody = if (offsetsTopicMetadata.error != Errors.NONE) {
+      val responseBody = if (offsetsTopicMetadata.error != Errors.NONE) { // 获取出错
+        // 返回GROUP_COORDINATOR_NOT_AVAILABLE错误码，Node节点被置为NO_NODE
         new GroupCoordinatorResponse(Errors.GROUP_COORDINATOR_NOT_AVAILABLE.code, Node.noNode)
       } else {
+        // 通过Offsets Topic的分区的ID获取其Leader副本所在的节点，由该节点上的GroupCoordinator负责管理该Consumer Group组
         val coordinatorEndpoint = offsetsTopicMetadata.partitionMetadata().asScala
           .find(_.partition == partition)
           .map(_.leader())
 
+        // 创建GroupCoordinatorResponse并返回
         coordinatorEndpoint match {
-          case Some(endpoint) if !endpoint.isEmpty =>
+          case Some(endpoint) if !endpoint.isEmpty => // 存在，返回构造的GroupCoordinatorResponse
             new GroupCoordinatorResponse(Errors.NONE.code, endpoint)
           case _ =>
+            // 不存在，返回GROUP_COORDINATOR_NOT_AVAILABLE错误码，Node节点被置为NO_NODE
             new GroupCoordinatorResponse(Errors.GROUP_COORDINATOR_NOT_AVAILABLE.code, Node.noNode)
         }
       }
 
       trace("Sending consumer metadata %s for correlation id %d to client %s."
         .format(responseBody, request.header.correlationId, request.header.clientId))
+      // 将响应加入到RequestChannel中的队列中，等待发送
       requestChannel.sendResponse(new RequestChannel.Response(request, new ResponseSend(request.connectionId, responseHeader, responseBody)))
     }
   }

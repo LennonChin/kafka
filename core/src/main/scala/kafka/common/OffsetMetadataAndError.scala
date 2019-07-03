@@ -19,7 +19,9 @@ package kafka.common
 
 import org.apache.kafka.common.protocol.Errors
 
-case class OffsetMetadata(offset: Long, metadata: String = OffsetMetadata.NoMetadata) {
+case class OffsetMetadata(offset: Long,
+                          metadata: String = OffsetMetadata.NoMetadata) { // metadata字段默认为空字符串
+
   override def toString = "OffsetMetadata[%d,%s]"
     .format(offset,
     if (metadata != null && metadata.length > 0) metadata else "NO_METADATA")
@@ -32,6 +34,7 @@ object OffsetMetadata {
   val InvalidOffsetMetadata = OffsetMetadata(OffsetMetadata.InvalidOffset, OffsetMetadata.NoMetadata)
 }
 
+// 记录offset相关信息
 case class OffsetAndMetadata(offsetMetadata: OffsetMetadata,
                              commitTimestamp: Long = org.apache.kafka.common.requests.OffsetCommitRequest.DEFAULT_TIMESTAMP,
                              expireTimestamp: Long = org.apache.kafka.common.requests.OffsetCommitRequest.DEFAULT_TIMESTAMP) {

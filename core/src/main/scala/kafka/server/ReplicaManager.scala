@@ -686,7 +686,9 @@ class ReplicaManager(val config: KafkaConfig,
   }
 
   def getMessageFormatVersion(topicAndPartition: TopicAndPartition): Option[Byte] =
+    // 获取分区对应的副本
     getReplica(topicAndPartition.topic, topicAndPartition.partition).flatMap { replica =>
+      // 使用副本对应的Log对象中存储的配置信息获取消息的格式化版本（也即是魔数版本）
       replica.log.map(_.config.messageFormatVersion.messageFormatVersion)
     }
 

@@ -49,6 +49,15 @@ case class MemberSummary(memberId: String,
  * 2. Awaiting sync callback: when the group is in the awaiting-sync state, its sync callback
  *                            is kept in metadata until the leader provides the group assignment
  *                            and the group transitions to stable
+  *
+  * GroupCoordinator用于记录消费者的元数据的类
+  *
+  * @param memberId 对应消费者的ID，由服务端的GroupCoordinator分配
+  * @param groupId 记录消费者所在的Consumer Group的ID
+  * @param clientId 消费者客户端ID，与memberId不同
+  * @param clientHost 消费者客户端的Host信息
+  * @param sessionTimeoutMs
+  * @param supportedProtocols 对应消费者支持的PartitionAssignor
  */
 @nonthreadsafe
 private[coordinator] class MemberMetadata(val memberId: String,
@@ -58,12 +67,18 @@ private[coordinator] class MemberMetadata(val memberId: String,
                                           val sessionTimeoutMs: Int,
                                           var supportedProtocols: List[(String, Array[Byte])]) {
 
+  // 记录分配给当前Member的分区信息
   var assignment: Array[Byte] = Array.empty[Byte]
+  // 与JoinGroupRequest相关的回调函数
   var awaitingJoinCallback: JoinGroupResult => Unit = null
+  // 与SyncGroupRequest相关的回调函数
   var awaitingSyncCallback: (Array[Byte], Short) => Unit = null
+  // 最后一次收到心跳消息的时间戳
   var latestHeartbeat: Long = -1
+  // 标识对应的消费者是否已经离开了Consumer Group
   var isLeaving: Boolean = false
 
+  // 当前Member支持的PartitionAssignor协议集合
   def protocols = supportedProtocols.map(_._1).toSet
 
   /**
@@ -104,8 +119,10 @@ private[coordinator] class MemberMetadata(val memberId: String,
   /**
    * Vote for one of the potential group protocols. This takes into account the protocol preference as
    * indicated by the order of supported protocols and returns the first one also contained in the set
+    * 从给定候选的PartitionAssignor中选择消费者支持的PartitionAssignor
    */
   def vote(candidates: Set[String]): String = {
+    // 遍历客户端支持的PartitionAssignor，根据指定的candidates包含的PartitionAssignor返回支持的PartitionAssignor
     supportedProtocols.find({ case (protocol, _) => candidates.contains(protocol)}) match {
       case Some((protocol, _)) => protocol
       case None =>

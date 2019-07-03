@@ -118,14 +118,24 @@ case class GroupSummary(state: String,
  *  1. group state
  *  2. generation id
  *  3. leader id
- */
+  *
+  *  记录了Consumer Group的元数据
+  *
+  * @param groupId 对应的Consumer Group的ID
+  * @param protocolType
+  */
 @nonthreadsafe
 private[coordinator] class GroupMetadata(val groupId: String, val protocolType: String) {
 
+  // key是memberId，value为对应的MemberMetadata对象
   private val members = new mutable.HashMap[String, MemberMetadata]
+  // 标识当前Consumer Group所处的状态
   private var state: GroupState = Stable
+  // 标识当前Consumer Group的年代信息，避免受到过期请求的影响
   var generationId = 0
+  // 记录Consumer Group中的Leader消费者的memberId
   var leaderId: String = null
+  // 记录当前Consumer Group选择的PartitionAssignor
   var protocol: String = null
 
   def is(groupState: GroupState) = state == groupState
@@ -137,16 +147,19 @@ private[coordinator] class GroupMetadata(val groupId: String, val protocolType: 
     assert(supportsProtocols(member.protocols))
 
     if (leaderId == null)
+      // 将第一个加入的Member作为Group Leader
       leaderId = memberId
     members.put(memberId, member)
   }
 
   def remove(memberId: String) {
     members.remove(memberId)
-    if (memberId == leaderId) {
+    if (memberId == leaderId) { // 如果移除的是Group Leader
+      // 重新选择Group Leader
       leaderId = if (members.isEmpty) {
         null
       } else {
+        // Group Leader被删除，则重新选择第一个Member作为Group Leader
         members.keys.head
       }
     }
@@ -154,12 +167,14 @@ private[coordinator] class GroupMetadata(val groupId: String, val protocolType: 
 
   def currentState = state
 
+  // Member集合是否为空
   def isEmpty = members.isEmpty
 
   def notYetRejoinedMembers = members.values.filter(_.awaitingJoinCallback == null).toList
 
   def allMembers = members.keySet
 
+  // 所有Member对应的MemberMetadata的集合
   def allMemberMetadata = members.values.toList
 
   def rebalanceTimeout = members.values.foldLeft(0) {(timeout, member) =>
@@ -176,27 +191,35 @@ private[coordinator] class GroupMetadata(val groupId: String, val protocolType: 
     state = groupState
   }
 
+  // 为Consumer Group选择合适的PartitionAssignor
   def selectProtocol: String = {
     if (members.isEmpty)
       throw new IllegalStateException("Cannot select protocol for empty group")
 
     // select the protocol for this group which is supported by all members
+    // 所有Member都支持的协议作为"候选协议"集合
     val candidates = candidateProtocols
 
     // let each member vote for one of the protocols and choose the one with the most votes
-    val votes: List[(String, Int)] = allMemberMetadata
-      .map(_.vote(candidates))
-      .groupBy(identity)
-      .mapValues(_.size)
+    /**
+      * 每个Member都会通过vote()方法进行投票，
+      * 每个Member会为其支持的协议中的第一个"候选协议"投一票，
+      * 最终将选择得票最多的PartitionAssignor
+      */
+    val votes: List[(String, Int)] = allMemberMetadata // 先获取所有Member对应的MemberMetadata
+      .map(_.vote(candidates)) // 使用MemberMetadata的vote()方法进行投票
+      .groupBy(identity) // 分组
+      .mapValues(_.size) // 计算每种PartitionAssignor的票数
       .toList
 
+    // 取得票最多的PartitionAssignor
     votes.maxBy(_._2)._1
   }
 
   private def candidateProtocols = {
     // get the set of protocols that are commonly supported by all members
     allMemberMetadata
-      .map(_.protocols)
+      .map(_.protocols) // 所有Member支持的协议集合
       .reduceLeft((commonProtocols, protocols) => commonProtocols & protocols)
   }
 
