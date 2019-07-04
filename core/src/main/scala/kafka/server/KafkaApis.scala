@@ -240,30 +240,35 @@ class KafkaApis(val requestChannel: RequestChannel,
    * Handle an offset commit request
    */
   def handleOffsetCommitRequest(request: RequestChannel.Request) {
+    // 获取请求头、转换请求对象类型
     val header = request.header
     val offsetCommitRequest = request.body.asInstanceOf[OffsetCommitRequest]
 
     // reject the request if not authorized to the group
-    if (!authorize(request.session, Read, new Resource(Group, offsetCommitRequest.groupId))) {
+    if (!authorize(request.session, Read, new Resource(Group, offsetCommitRequest.groupId))) { // 检查授权
       val errorCode = new JShort(Errors.GROUP_AUTHORIZATION_FAILED.code)
       val results = offsetCommitRequest.offsetData.keySet.asScala.map { topicPartition =>
         (topicPartition, errorCode)
       }.toMap
       val responseHeader = new ResponseHeader(header.correlationId)
       val responseBody = new OffsetCommitResponse(results.asJava)
+      // 授权失败的响应返回
       requestChannel.sendResponse(new RequestChannel.Response(request, new ResponseSend(request.connectionId, responseHeader, responseBody)))
     } else {
       // filter non-existent topics
+      // 过滤不存在的主题
       val invalidRequestsInfo = offsetCommitRequest.offsetData.asScala.filter { case (topicPartition, _) =>
         !metadataCache.contains(topicPartition.topic)
       }
       val filteredRequestInfo = offsetCommitRequest.offsetData.asScala.toMap -- invalidRequestsInfo.keys
 
+      // 授权检查是否允许操作目标主题
       val (authorizedRequestInfo, unauthorizedRequestInfo) = filteredRequestInfo.partition {
         case (topicPartition, offsetMetadata) => authorize(request.session, Read, new Resource(Topic, topicPartition.topic))
       }
 
       // the callback for sending an offset commit response
+      // 回调方法
       def sendResponseCallback(commitStatus: immutable.Map[TopicPartition, Short]) {
         val mergedCommitStatus = commitStatus ++ unauthorizedRequestInfo.mapValues(_ => Errors.TOPIC_AUTHORIZATION_FAILED.code)
 
@@ -280,36 +285,41 @@ class KafkaApis(val requestChannel: RequestChannel,
         requestChannel.sendResponse(new RequestChannel.Response(request, new ResponseSend(request.connectionId, responseHeader, responseBody)))
       }
 
-      if (authorizedRequestInfo.isEmpty)
+      if (authorizedRequestInfo.isEmpty) // 通过授权的请求为空，直接调用回调方法，传入空集合参数
         sendResponseCallback(Map.empty)
-      else if (header.apiVersion == 0) {
+      else if (header.apiVersion == 0) { // apiVersion为0的情况，需要写入到Zookeeper中，新版本才是由主题__consumer_offsets进行管理
         // for version 0 always store offsets to ZK
-        val responseInfo = authorizedRequestInfo.map {
+        val responseInfo = authorizedRequestInfo.map { // 遍历处理通过授权的请求，最终获得处理结果
           case (topicPartition, partitionData) =>
+            // 构造得到封装了/consumers/[group_id]/offsets/[topic_name]和/consumers/[group_id]/owners/[topic_name]路径的ZKGroupTopicDirs对象
             val topicDirs = new ZKGroupTopicDirs(offsetCommitRequest.groupId, topicPartition.topic)
             try {
-              if (!metadataCache.hasTopicMetadata(topicPartition.topic))
-                (topicPartition, Errors.UNKNOWN_TOPIC_OR_PARTITION.code)
-              else if (partitionData.metadata != null && partitionData.metadata.length > config.offsetMetadataMaxSize)
-                (topicPartition, Errors.OFFSET_METADATA_TOO_LARGE.code)
-              else {
+              if (!metadataCache.hasTopicMetadata(topicPartition.topic)) // 元数据不包含该主题
+                (topicPartition, Errors.UNKNOWN_TOPIC_OR_PARTITION.code) // 返回UNKNOWN_TOPIC_OR_PARTITION错误
+              else if (partitionData.metadata != null && // 对应分区的元数据存在
+                        partitionData.metadata.length > config.offsetMetadataMaxSize) // 分区的元数据过大（offset.metadata.max.bytes）
+                (topicPartition, Errors.OFFSET_METADATA_TOO_LARGE.code) // 返回OFFSET_METADATA_TOO_LARGE错误
+              else { // 正常情况
+                // 更新Zookeeper中/consumers/[group_id]/offsets/[topic_name]/[partition_id]的数据为提交的Offset
                 zkUtils.updatePersistentPath(s"${topicDirs.consumerOffsetDir}/${topicPartition.partition}", partitionData.offset.toString)
-                (topicPartition, Errors.NONE.code)
+                (topicPartition, Errors.NONE.code) // 无错误码返回
               }
             } catch {
               case e: Throwable => (topicPartition, Errors.forException(e).code)
             }
         }
+        // 执行回调
         sendResponseCallback(responseInfo)
-      } else {
+      } else { // apiVersion不为0的情况
         // for version 1 and beyond store offsets in offset manager
 
         // compute the retention time based on the request version:
         // if it is v1 or not specified by user, we can use the default retention
+        // apiVersion <= 1或者没有指定offset的保留时长，使用默认时长（24小时）
         val offsetRetention =
           if (header.apiVersion <= 1 ||
-            offsetCommitRequest.retentionTime == OffsetCommitRequest.DEFAULT_RETENTION_TIME)
-            coordinator.offsetConfig.offsetsRetentionMs
+            offsetCommitRequest.retentionTime == OffsetCommitRequest.DEFAULT_RETENTION_TIME) // -1
+            coordinator.offsetConfig.offsetsRetentionMs // 默认为24*60*60*1000L
           else
             offsetCommitRequest.retentionTime
 
@@ -319,13 +329,19 @@ class KafkaApis(val requestChannel: RequestChannel,
         //   - If v1 and no explicit commit timestamp is provided we use default expiration timestamp.
         //   - If v1 and explicit commit timestamp is provided we calculate retention from that explicit commit timestamp
         //   - If v2 we use the default expiration timestamp
+        // 时间戳
         val currentTimestamp = SystemTime.milliseconds
+        // 过期时间
         val defaultExpireTimestamp = offsetRetention + currentTimestamp
+        // 遍历请求进行格式处理，转换为OffsetAndMetadata对象
         val partitionData = authorizedRequestInfo.mapValues { partitionData =>
           val metadata = if (partitionData.metadata == null) OffsetMetadata.NoMetadata else partitionData.metadata;
           new OffsetAndMetadata(
+            // 消息数据
             offsetMetadata = OffsetMetadata(partitionData.offset, metadata),
+            // 提交时间
             commitTimestamp = currentTimestamp,
+            // 过期时间
             expireTimestamp = {
               if (partitionData.timestamp == OffsetCommitRequest.DEFAULT_TIMESTAMP)
                 defaultExpireTimestamp
@@ -336,6 +352,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         }
 
         // call coordinator to handle commit offset
+        // 使用GroupCoordinator处理提交的offset消息
         coordinator.handleCommitOffsets(
           offsetCommitRequest.groupId,
           offsetCommitRequest.memberId,
@@ -846,39 +863,59 @@ class KafkaApis(val requestChannel: RequestChannel,
 
   /*
    * Handle an offset fetch request
+   *
+   * Consumer Group向GroupCoordinator发送OffsetFetchRequest请求
+   * 以获取最近一次提交的offset
    */
   def handleOffsetFetchRequest(request: RequestChannel.Request) {
+    // 获取请求头，转换请求为OffsetFetchRequest对象
     val header = request.header
     val offsetFetchRequest = request.body.asInstanceOf[OffsetFetchRequest]
 
+    // 构造响应头
     val responseHeader = new ResponseHeader(header.correlationId)
     val offsetFetchResponse =
     // reject the request if not authorized to the group
-    if (!authorize(request.session, Read, new Resource(Group, offsetFetchRequest.groupId))) {
+    // 检查Group ID的授权
+    if (!authorize(request.session, Read, new Resource(Group, offsetFetchRequest.groupId))) { // 检查授权未通过
+      // 构造封装了INVALID_OFFSET和GROUP_AUTHORIZATION_FAILED的响应对象
       val unauthorizedGroupResponse = new OffsetFetchResponse.PartitionData(OffsetFetchResponse.INVALID_OFFSET, "", Errors.GROUP_AUTHORIZATION_FAILED.code)
       val results = offsetFetchRequest.partitions.asScala.map { topicPartition => (topicPartition, unauthorizedGroupResponse)}.toMap
       new OffsetFetchResponse(results.asJava)
     } else {
+      // 检查分区的授权情况
       val (authorizedTopicPartitions, unauthorizedTopicPartitions) = offsetFetchRequest.partitions.asScala.partition { topicPartition =>
         authorize(request.session, Describe, new Resource(Topic, topicPartition.topic))
       }
+
+      // 构造未通过授权的分区的响应集合
       val unauthorizedTopicResponse = new OffsetFetchResponse.PartitionData(OffsetFetchResponse.INVALID_OFFSET, "", Errors.TOPIC_AUTHORIZATION_FAILED.code)
       val unauthorizedStatus = unauthorizedTopicPartitions.map(topicPartition => (topicPartition, unauthorizedTopicResponse)).toMap
+
+      // 未知分区的响应，包含INVALID_OFFSET和UNKNOWN_TOPIC_OR_PARTITION错误码
       val unknownTopicPartitionResponse = new OffsetFetchResponse.PartitionData(OffsetFetchResponse.INVALID_OFFSET, "", Errors.UNKNOWN_TOPIC_OR_PARTITION.code)
 
-      if (header.apiVersion == 0) {
+      /**
+        * apiVersion为0表示使用旧版本请求，此时的offset存储在ZooKeeper中，所以其处理逻辑主要是ZooKeeper的读取操作。
+        * 在OffsetCommitRequest的处理过程中也有根据版本号进行不同操作的相关代码，请读者注意
+        * apiVersion为1表示使用新版本的请求，此时提交的offset由GroupCoordinator管理，由Kafka的主题__consumer_offsets进行管理
+        */
+      if (header.apiVersion == 0) { // apiVersion == 0的旧版本的处理
         // version 0 reads offsets from ZK
+        // 遍历授权的主题分区
         val responseInfo = authorizedTopicPartitions.map { topicPartition =>
+          // 构造构造得到封装了/consumers/[group_id]/offsets/[topic_name]和/consumers/[group_id]/owners/[topic_name]路径的ZKGroupTopicDirs对象
           val topicDirs = new ZKGroupTopicDirs(offsetFetchRequest.groupId, topicPartition.topic)
           try {
-            if (!metadataCache.hasTopicMetadata(topicPartition.topic))
-              (topicPartition, unknownTopicPartitionResponse)
+            if (!metadataCache.hasTopicMetadata(topicPartition.topic)) // 元数据不包含该主题
+              (topicPartition, unknownTopicPartitionResponse) // 返回包含INVALID_OFFSET和UNKNOWN_TOPIC_OR_PARTITION错误码的响应
             else {
+              // 从Zookeeper中读取/consumers/[group_id]/offsets/[topic_name]/[partition_id]路径的数据
               val payloadOpt = zkUtils.readDataMaybeNull(s"${topicDirs.consumerOffsetDir}/${topicPartition.partition}")._1
               payloadOpt match {
-                case Some(payload) =>
+                case Some(payload) => // 能够读取到数据，根据读取的数据构造响应
                   (topicPartition, new OffsetFetchResponse.PartitionData(payload.toLong, "", Errors.NONE.code))
-                case None =>
+                case None => // 未能读取到数据，返回包含INVALID_OFFSET和UNKNOWN_TOPIC_OR_PARTITION错误码
                   (topicPartition, unknownTopicPartitionResponse)
               }
             }
@@ -888,19 +925,23 @@ class KafkaApis(val requestChannel: RequestChannel,
                 Errors.forException(e).code))
           }
         }.toMap
+        // 构造响应对象
         new OffsetFetchResponse((responseInfo ++ unauthorizedStatus).asJava)
-      } else {
+      } else { // apiVersion == 1的新版本的处理，需要从Kafka的主题__consumer_offsets中读取
         // version 1 reads offsets from Kafka;
+        // 使用GroupCoordinator读取offset
         val offsets = coordinator.handleFetchOffsets(offsetFetchRequest.groupId, authorizedTopicPartitions).toMap
 
         // Note that we do not need to filter the partitions in the
         // metadata cache as the topic partitions will be filtered
         // in coordinator's offset manager through the offset cache
+        // 构造响应对象
         new OffsetFetchResponse((offsets ++ unauthorizedStatus).asJava)
       }
     }
 
     trace(s"Sending offset fetch response $offsetFetchResponse for correlation id ${header.correlationId} to client ${header.clientId}.")
+    // 将OffsetFetchResponse放入RequestChannel中等待发送
     requestChannel.sendResponse(new Response(request, new ResponseSend(request.connectionId, responseHeader, offsetFetchResponse)))
   }
 
@@ -973,15 +1014,23 @@ class KafkaApis(val requestChannel: RequestChannel,
     requestChannel.sendResponse(new RequestChannel.Response(request, new ResponseSend(request.connectionId, responseHeader, responseBody)))
   }
 
+  // 使用kafka-consumer-groups.sh脚本列出所有的Consumer Group
   def handleListGroupsRequest(request: RequestChannel.Request) {
+    // 构造请求头
     val responseHeader = new ResponseHeader(request.header.correlationId)
-    val responseBody = if (!authorize(request.session, Describe, Resource.ClusterResource)) {
+    // 构造请求体
+    val responseBody = if (!authorize(request.session, Describe, Resource.ClusterResource)) { // 未通过授权
+      // 返回错误码为CLUSTER_AUTHORIZATION_FAILED的响应
       ListGroupsResponse.fromError(Errors.CLUSTER_AUTHORIZATION_FAILED)
-    } else {
+    } else { // 通过授权
+      // 使用GroupCoordinator的handleListGroups()方法来处理
       val (error, groups) = coordinator.handleListGroups()
+      // 将得到的结果构造为ListGroupsResponse响应集合
       val allGroups = groups.map { group => new ListGroupsResponse.Group(group.groupId, group.protocolType) }
+      // 构造响应对象
       new ListGroupsResponse(error.code, allGroups.asJava)
     }
+    // 将响应对象放入RequestChannel等待发送
     requestChannel.sendResponse(new RequestChannel.Response(request, new ResponseSend(request.connectionId, responseHeader, responseBody)))
   }
 
