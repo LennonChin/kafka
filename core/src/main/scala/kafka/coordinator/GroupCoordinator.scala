@@ -273,16 +273,20 @@ class GroupCoordinator(val brokerId: Int,
               val missing = group.allMembers -- groupAssignment.keySet
               val assignment = groupAssignment ++ missing.map(_ -> Array.empty[Byte]).toMap
 
+              // 第三个参数是回调函数，会在消息被追加后被调用
               delayedGroupStore = Some(groupManager.prepareStoreGroup(group, assignment, (errorCode: Short) => {
                 group synchronized {
                   // another member may have joined the group while we were awaiting this callback,
                   // so we must ensure we are still in the AwaitingSync state and the same generation
                   // when it gets invoked. if we have transitioned to another state, then do nothing
+                  // 检测Consumer Group状态及年代信息
                   if (group.is(AwaitingSync) && generationId == group.generationId) {
                     if (errorCode != Errors.NONE.code) {
+                      // 有错误的情况
                       resetAndPropagateAssignmentError(group, errorCode)
                       maybePrepareRebalance(group)
                     } else {
+                      // 正常的情况
                       setAndPropagateAssignment(group, assignment)
                       group.transitionTo(Stable)
                     }
@@ -376,6 +380,14 @@ class GroupCoordinator(val brokerId: Int,
     }
   }
 
+  /**
+    * 处理客户端提交的offset
+    * @param groupId 消费者组ID
+    * @param memberId 消费者的Member ID
+    * @param generationId 请求关联ID
+    * @param offsetMetadata offset提交数据
+    * @param responseCallback 回调函数
+    */
   def handleCommitOffsets(groupId: String,
                           memberId: String,
                           generationId: Int,
@@ -383,36 +395,48 @@ class GroupCoordinator(val brokerId: Int,
                           responseCallback: immutable.Map[TopicPartition, Short] => Unit) {
     var delayedOffsetStore: Option[DelayedStore] = None
 
-    if (!isActive.get) {
+    if (!isActive.get) { // 判断当前GroupCoordinator是否允许
+      // 调用回调函数，返回GROUP_COORDINATOR_NOT_AVAILABLE错误码
       responseCallback(offsetMetadata.mapValues(_ => Errors.GROUP_COORDINATOR_NOT_AVAILABLE.code))
-    } else if (!isCoordinatorForGroup(groupId)) {
+    } else if (!isCoordinatorForGroup(groupId)) { // 判断当前GroupCoordinator是否负责管理该Consumer Group
+      // 调用回调函数，返回NOT_COORDINATOR_FOR_GROUP错误码
       responseCallback(offsetMetadata.mapValues(_ => Errors.NOT_COORDINATOR_FOR_GROUP.code))
-    } else if (isCoordinatorLoadingInProgress(groupId)) {
+    } else if (isCoordinatorLoadingInProgress(groupId)) { // 判断该Consumer Group对应的Offsets Topic分区是否还处于加载过程中
+      // 调用回调函数，返回GROUP_LOAD_IN_PROGRESS错误码
       responseCallback(offsetMetadata.mapValues(_ => Errors.GROUP_LOAD_IN_PROGRESS.code))
-    } else {
+    } else { // 正常情况
+      // 获取Consumer Group对应的GroupMetadata对象
       val group = groupManager.getGroup(groupId)
-      if (group == null) {
-        if (generationId < 0)
+      if (group == null) { // GroupMetadata不存在
+        if (generationId < 0) // generationId小于0，说明该Consumer Group不依赖Kafka做分区管理，允许提交
           // the group is not relying on Kafka for partition management, so allow the commit
           delayedOffsetStore = Some(groupManager.prepareStoreOffsets(groupId, memberId, generationId, offsetMetadata,
             responseCallback))
         else
           // the group has failed over to this coordinator (which will be handled in KAFKA-2017),
           // or this is a request coming from an older generation. either way, reject the commit
+          // 否则可能是因为请求来自旧的GroupCoordinator年代，调用回调函数，返回ILLEGAL_GENERATION错误码
           responseCallback(offsetMetadata.mapValues(_ => Errors.ILLEGAL_GENERATION.code))
-      } else {
+      } else { // GroupMetadata存在
         group synchronized {
-          if (group.is(Dead)) {
+          if (group.is(Dead)) { // GroupMetadata状态为Dead
+            // 调用回调函数，返回UNKNOWN_MEMBER_ID错误码
             responseCallback(offsetMetadata.mapValues(_ => Errors.UNKNOWN_MEMBER_ID.code))
-          } else if (group.is(AwaitingSync)) {
+          } else if (group.is(AwaitingSync)) { // GroupMetadata状态为AwaitingSync
+            // 调用回调函数，返回REBALANCE_IN_PROGRESS错误码
             responseCallback(offsetMetadata.mapValues(_ => Errors.REBALANCE_IN_PROGRESS.code))
-          } else if (!group.has(memberId)) {
+          } else if (!group.has(memberId)) { // GroupMetadata不包含该MemberID
+            // 调用回调函数，返回UNKNOWN_MEMBER_ID错误码
             responseCallback(offsetMetadata.mapValues(_ => Errors.UNKNOWN_MEMBER_ID.code))
-          } else if (generationId != group.generationId) {
+          } else if (generationId != group.generationId) { // 年代信息不匹配
+            // 调用回调函数，返回ILLEGAL_GENERATION错误码
             responseCallback(offsetMetadata.mapValues(_ => Errors.ILLEGAL_GENERATION.code))
           } else {
+            // 获取Member对应的MemberMetadata对象
             val member = group.get(memberId)
+            // 准备下一次的心跳延迟任务
             completeAndScheduleNextHeartbeatExpiration(group, member)
+            // 使用GroupMetadataManager提交该offset并在完成后处理回调
             delayedOffsetStore = Some(groupManager.prepareStoreOffsets(groupId, memberId, generationId,
               offsetMetadata, responseCallback))
           }
@@ -424,29 +448,36 @@ class GroupCoordinator(val brokerId: Int,
     delayedOffsetStore.foreach(groupManager.store)
   }
 
+  // 处理获取分区offset操作
   def handleFetchOffsets(groupId: String,
                          partitions: Seq[TopicPartition]): Map[TopicPartition, OffsetFetchResponse.PartitionData] = {
-    if (!isActive.get) {
+    if (!isActive.get) { // 判断当前GroupCoordinator是否正在运行
+      // 未运行将记录GROUP_COORDINATOR_NOT_AVAILABLE错误码
       partitions.map { case topicPartition =>
         (topicPartition, new OffsetFetchResponse.PartitionData(OffsetFetchResponse.INVALID_OFFSET, "", Errors.GROUP_COORDINATOR_NOT_AVAILABLE.code))}.toMap
-    } else if (!isCoordinatorForGroup(groupId)) {
+    } else if (!isCoordinatorForGroup(groupId)) { // 判断当前GroupCoordinator是否负责管理该Consumer Group
+      // 将记录NOT_COORDINATOR_FOR_GROUP错误码
       partitions.map { case topicPartition =>
         (topicPartition, new OffsetFetchResponse.PartitionData(OffsetFetchResponse.INVALID_OFFSET, "", Errors.NOT_COORDINATOR_FOR_GROUP.code))}.toMap
-    } else if (isCoordinatorLoadingInProgress(groupId)) {
+    } else if (isCoordinatorLoadingInProgress(groupId)) { // 判断该Consumer Group对应的Offsets Topic分区是否还处于加载过程中
+      // 将记录GROUP_LOAD_IN_PROGRESS错误码
       partitions.map { case topicPartition =>
         (topicPartition, new OffsetFetchResponse.PartitionData(OffsetFetchResponse.INVALID_OFFSET, "", Errors.GROUP_LOAD_IN_PROGRESS.code))}.toMap
-    } else {
+    } else { // 验证通过，使用GroupMetadataManager的getOffsets()方法获取对应的offset
       // return offsets blindly regardless the current group state since the group may be using
       // Kafka commit storage without automatic group management
       groupManager.getOffsets(groupId, partitions)
     }
   }
 
+  // 获取所有的Consumer Group
   def handleListGroups(): (Errors, List[GroupOverview]) = {
-    if (!isActive.get) {
+    if (!isActive.get) { // 检查GroupCoordinator运行状态
       (Errors.GROUP_COORDINATOR_NOT_AVAILABLE, List[GroupOverview]())
     } else {
+      // 如果存在正在加载的Offset Topic分区，则无法返回某些Consumer Group，直接返回GROUP_LOAD_IN_PROGRESS错误码
       val errorCode = if (groupManager.isLoading()) Errors.GROUP_LOAD_IN_PROGRESS else Errors.NONE
+      // 否则获取GroupMetadataManager的groupsCache的值集，构造为GroupOverview对象列表进行返回
       (errorCode, groupManager.currentGroups.map(_.overview).toList)
     }
   }
@@ -517,19 +548,28 @@ class GroupCoordinator(val brokerId: Int,
 
   private def setAndPropagateAssignment(group: GroupMetadata, assignment: Map[String, Array[Byte]]) {
     assert(group.is(AwaitingSync))
+    // 更新GroupMetadata中每个相关的MemberMetadata.assignment字段
     group.allMemberMetadata.foreach(member => member.assignment = assignment(member.memberId))
+
+    /**
+      * 调用每个MemberMetadata的awaitingSyncCallback回调函数，创建SyncGroupResponse对象并添加到RequestChannel中等待发送；
+      * 将本次心跳延迟任务完成并开始下次等待心跳的延迟任务的执行或超时
+      */
     propagateAssignment(group, Errors.NONE.code)
   }
 
   private def resetAndPropagateAssignmentError(group: GroupMetadata, errorCode: Short) {
+    // 检查GroupMetadata的状态是否是AwaitingSync
     assert(group.is(AwaitingSync))
+    // 清空GroupMetadata中的分配情况
     group.allMemberMetadata.foreach(_.assignment = Array.empty[Byte])
     propagateAssignment(group, errorCode)
   }
 
   private def propagateAssignment(group: GroupMetadata, errorCode: Short) {
-    for (member <- group.allMemberMetadata) {
+    for (member <- group.allMemberMetadata) { // 遍历所有的Member
       if (member.awaitingSyncCallback != null) {
+        // 调用awaitingSyncCallback回调函数
         member.awaitingSyncCallback(member.assignment, errorCode)
         member.awaitingSyncCallback = null
 
@@ -537,6 +577,7 @@ class GroupCoordinator(val brokerId: Int,
         // This is because if any member's session expired while we were still awaiting either
         // the leader sync group or the storage callback, its expiration will be ignored and no
         // future heartbeat expectations will not be scheduled.
+        // 开启等待下次心跳的延迟任务
         completeAndScheduleNextHeartbeatExpiration(group, member)
       }
     }
@@ -561,12 +602,17 @@ class GroupCoordinator(val brokerId: Int,
    */
   private def completeAndScheduleNextHeartbeatExpiration(group: GroupMetadata, member: MemberMetadata) {
     // complete current heartbeat expectation
+    // 更新最后的心跳到达时间为当前时间
     member.latestHeartbeat = time.milliseconds()
+    // 构造以Group ID和Member ID构成的键
     val memberKey = MemberKey(member.groupId, member.memberId)
+    // 检查该键对应的Watchers，尝试完成该Watchers中的DelayedOperation
     heartbeatPurgatory.checkAndComplete(memberKey)
 
     // reschedule the next heartbeat expiration deadline
+    // 下一次心跳的过期时间
     val newHeartbeatDeadline = member.latestHeartbeat + member.sessionTimeoutMs
+    // 创建心跳延迟任务，并提交到heartbeatPurgatory炼狱
     val delayedHeartbeat = new DelayedHeartbeat(this, group, member, newHeartbeatDeadline, member.sessionTimeoutMs)
     heartbeatPurgatory.tryCompleteElseWatch(delayedHeartbeat, Seq(memberKey))
   }

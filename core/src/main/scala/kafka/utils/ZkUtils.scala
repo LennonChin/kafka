@@ -903,16 +903,16 @@ private object ZKStringSerializer extends ZkSerializer {
 }
 
 class ZKGroupDirs(val group: String) {
-  def consumerDir = ConsumersPath
-  def consumerGroupDir = consumerDir + "/" + group
-  def consumerRegistryDir = consumerGroupDir + "/ids"
-  def consumerGroupOffsetsDir = consumerGroupDir + "/offsets"
-  def consumerGroupOwnersDir = consumerGroupDir + "/owners"
+  def consumerDir = ConsumersPath // /consumers
+  def consumerGroupDir = consumerDir + "/" + group // /consumers/[group_id]
+  def consumerRegistryDir = consumerGroupDir + "/ids" // /consumers/[group_id]/ids
+  def consumerGroupOffsetsDir = consumerGroupDir + "/offsets" // /consumers/[group_id]/offsets
+  def consumerGroupOwnersDir = consumerGroupDir + "/owners" // /consumers/[group_id]/owners
 }
 
 class ZKGroupTopicDirs(group: String, topic: String) extends ZKGroupDirs(group) {
-  def consumerOffsetDir = consumerGroupOffsetsDir + "/" + topic
-  def consumerOwnerDir = consumerGroupOwnersDir + "/" + topic
+  def consumerOffsetDir = consumerGroupOffsetsDir + "/" + topic // /consumers/[group_id]/offsets/[topic_name]
+  def consumerOwnerDir = consumerGroupOwnersDir + "/" + topic // /consumers/[group_id]/owners/[topic_name]
 }
 
 
