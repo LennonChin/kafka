@@ -25,60 +25,84 @@ import org.apache.kafka.common.protocol.Errors
 
 import collection.mutable
 
+// 用于表示Consumer Group的状态
 private[coordinator] sealed trait GroupState { def state: Byte }
 
 /**
  * Group is preparing to rebalance
+  *
+  * Consumer Group当前正在准备进行Rebalance操作
+  *
+  * GroupCoordinator可以正常地处理OffsetFetchRequest、LeaveGroupRequest、OffsetCommitRequest，
+  * 但对于收到的HeartbeatRequest和SyncGroupRequest，则会在其响应中携带REBALANCE_IN_PROGRESS错误码进行标识。
+  * 当收到JoinGroupRequest时，GroupCoordinator会先创建对应的DelayedJoin，等待条件满足后对其进行响应。
  *
- * action: respond to heartbeats with REBALANCE_IN_PROGRESS
- *         respond to sync group with REBALANCE_IN_PROGRESS
- *         remove member on leave group request
- *         park join group requests from new or existing members until all expected members have joined
- *         allow offset commits from previous generation
- *         allow offset fetch requests
- * transition: some members have joined by the timeout => AwaitingSync
- *             all members have left the group => Dead
+ * action: respond to heartbeats with REBALANCE_IN_PROGRESS（HeartbeatRequest）
+ *         respond to sync group with REBALANCE_IN_PROGRESS（SyncGroupRequest）
+ *         remove member on leave group request（LeaveGroupRequest）
+ *         park join group requests from new or existing members until all expected members have joined（JoinGroupRequest）
+ *         allow offset commits from previous generation（OffsetCommitRequest）
+ *         allow offset fetch requests（OffsetFetchRequest）
+ * transition: some members have joined by the timeout => AwaitingSync 当有DelayedJoin超时或是Consumer Group之前的Member都已经重新申请加入时进行切换
+ *             all members have left the group => Dead 所有的Member都离开Consumer Group时进行切换
  */
 private[coordinator] case object PreparingRebalance extends GroupState { val state: Byte = 1 }
 
 /**
  * Group is awaiting state assignment from the leader
+  *
+  * 表示正在等待Group Leader的SyncGroupRequest。
+  * 当GroupCoordinator收到OffsetCommitRequest和HeartbeatRequest请求时，会在其响应中携带REBALANCE_IN_PROGRESS错误码进行标识。
+  * 对于来自Group Follower的SyncGroupRequest，则直接抛弃，直到收到Group Leader的SyncGroupRequest时一起响应。
+  *
+  * Consumer Group当前正在等待Group Leader将分区的分配结果发送到GroupCoordinator
  *
- * action: respond to heartbeats with REBALANCE_IN_PROGRESS
- *         respond to offset commits with REBALANCE_IN_PROGRESS
- *         park sync group requests from followers until transition to Stable
- *         allow offset fetch requests
- * transition: sync group with state assignment received from leader => Stable
- *             join group from new member or existing member with updated metadata => PreparingRebalance
- *             leave group from existing member => PreparingRebalance
- *             member failure detected => PreparingRebalance
+ * action: respond to heartbeats with REBALANCE_IN_PROGRESS（HeartbeatRequest）
+ *         respond to offset commits with REBALANCE_IN_PROGRESS（OffsetCommitRequest）
+ *         park sync group requests from followers until transition to Stable（SyncGroupRequest）
+ *         allow offset fetch requests（OffsetFetchRequest）
+ * transition: sync group with state assignment received from leader => Stable 当GroupCoordinator收到Group Leader发来的SyncGroupRequest时进行切换
+ *             join group from new member or existing member with updated metadata => PreparingRebalance 有新的Member请求加入Consumer Group，已存在的Member更新元数据
+ *             leave group from existing member => PreparingRebalance 已存在的Member退出Consumer Group
+ *             member failure detected => PreparingRebalance Member心跳超时
  */
 private[coordinator] case object AwaitingSync extends GroupState { val state: Byte = 5}
 
 /**
  * Group is stable
+  *
+  * 标识Consumer Group处于正常状态，这也是Consumer Group的初始状态
+  *
+  * 该状态的Consumer Group，GroupCoordinator可以处理所有的请求：
+  * OffsetFetchRequest、HeartbeatRequest、OffsetCommitRequest、
+  * 来自Group Follower的JoinGroupRequest、来自Consumer Group中现有Member的SyncGroupRequest。
  *
- * action: respond to member heartbeats normally
- *         respond to sync group from any member with current assignment
- *         respond to join group from followers with matching metadata with current group metadata
- *         allow offset commits from member of current generation
- *         allow offset fetch requests
- * transition: member failure detected via heartbeat => PreparingRebalance
- *             leave group from existing member => PreparingRebalance
- *             leader join-group received => PreparingRebalance
- *             follower join-group with new metadata => PreparingRebalance
+ * action: respond to member heartbeats normally（HeartbeatRequest）
+ *         respond to sync group from any member with current assignment（SyncGroupRequest）
+ *         respond to join group from followers with matching metadata with current group metadata（JoinGroupRequest）
+ *         allow offset commits from member of current generation（OffsetCommitRequest）
+ *         allow offset fetch requests（OffsetFetchRequest）
+ * transition: member failure detected via heartbeat => PreparingRebalance 有Member心跳检测超时
+ *             leave group from existing member => PreparingRebalance 有Member主动退出
+ *             leader join-group received => PreparingRebalance 当前的Group Leader发送JoinGroupRequest
+ *             follower join-group with new metadata => PreparingRebalance 有新的Member请求加入Consumer Group
  */
 private[coordinator] case object Stable extends GroupState { val state: Byte = 3 }
 
 /**
  * Group has no more members
+  *
+  * 处于此状态的Consumer Group中已经没有Member存在了
+  *
+  * 处于此状态的Consumer Group中没有Member，其对应的GroupMetadata也将被删除。
+  * 此状态的Consumer Group，除了OffsetCommitRequest，其他请求的响应中都会携带UNKNOWN_MEMBER_ID错误码进行标识。
  *
- * action: respond to join group with UNKNOWN_MEMBER_ID
- *         respond to sync group with UNKNOWN_MEMBER_ID
- *         respond to heartbeat with UNKNOWN_MEMBER_ID
- *         respond to leave group with UNKNOWN_MEMBER_ID
- *         respond to offset commit with UNKNOWN_MEMBER_ID
- *         allow offset fetch requests
+ * action: respond to join group with UNKNOWN_MEMBER_ID（JoinGroupRequest）
+ *         respond to sync group with UNKNOWN_MEMBER_ID（SyncGroupRequest）
+ *         respond to heartbeat with UNKNOWN_MEMBER_ID（HeartbeatRequest）
+ *         respond to leave group with UNKNOWN_MEMBER_ID（LeaveGroupRequest）
+ *         respond to offset commit with UNKNOWN_MEMBER_ID（OffsetCommitRequest）
+ *         allow offset fetch requests（OffsetFetchRequest）
  * transition: Dead is a final state before group metadata is cleaned up, so there are no transitions
  */
 private[coordinator] case object Dead extends GroupState { val state: Byte = 4 }
@@ -170,6 +194,10 @@ private[coordinator] class GroupMetadata(val groupId: String, val protocolType: 
   // Member集合是否为空
   def isEmpty = members.isEmpty
 
+  /**
+    * 还没有加入Group的Member列表，使用其awaitingJoinCallback是否为空进行判断
+    * awaitingJoinCallback是个非常重要的标记，它用来判断一个Member是否已经申请加入
+    */
   def notYetRejoinedMembers = members.values.filter(_.awaitingJoinCallback == null).toList
 
   def allMembers = members.keySet
@@ -177,6 +205,7 @@ private[coordinator] class GroupMetadata(val groupId: String, val protocolType: 
   // 所有Member对应的MemberMetadata的集合
   def allMemberMetadata = members.values.toList
 
+  // 所有MemberMetadata的最大超时时长
   def rebalanceTimeout = members.values.foldLeft(0) {(timeout, member) =>
     timeout.max(member.sessionTimeoutMs)
   }
@@ -184,6 +213,7 @@ private[coordinator] class GroupMetadata(val groupId: String, val protocolType: 
   // TODO: decide if ids should be predictable or random
   def generateMemberIdSuffix = UUID.randomUUID().toString
 
+  // 只有在State和AwaitingSync的状态下才可以切换到PreparingRebalance状态
   def canRebalance = state == Stable || state == AwaitingSync
 
   def transitionTo(groupState: GroupState) {

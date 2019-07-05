@@ -82,13 +82,13 @@ class KafkaApis(val requestChannel: RequestChannel,
         case ApiKeys.STOP_REPLICA => handleStopReplicaRequest(request) // 停止副本，可能会删除副本
         case ApiKeys.UPDATE_METADATA_KEY => handleUpdateMetadataRequest(request) // 更新元数据（由KafkaController要求Broker更新）
         case ApiKeys.CONTROLLED_SHUTDOWN_KEY => handleControlledShutdownRequest(request)
-        case ApiKeys.OFFSET_COMMIT => handleOffsetCommitRequest(request) // 提交offset
-        case ApiKeys.OFFSET_FETCH => handleOffsetFetchRequest(request) // 获取offset
-        case ApiKeys.GROUP_COORDINATOR => handleGroupCoordinatorRequest(request) // 获取GroupCoordinator
-        case ApiKeys.JOIN_GROUP => handleJoinGroupRequest(request) // JoinGroup请求
-        case ApiKeys.HEARTBEAT => handleHeartbeatRequest(request) // 心跳
-        case ApiKeys.LEAVE_GROUP => handleLeaveGroupRequest(request) // 离开Group
-        case ApiKeys.SYNC_GROUP => handleSyncGroupRequest(request) // 同步Group
+        case ApiKeys.OFFSET_COMMIT => handleOffsetCommitRequest(request) // 提交offset，OffsetCommitRequest
+        case ApiKeys.OFFSET_FETCH => handleOffsetFetchRequest(request) // 获取offset，OffsetFetchRequest
+        case ApiKeys.GROUP_COORDINATOR => handleGroupCoordinatorRequest(request) // 获取GroupCoordinator，GroupCoordinatorRequest
+        case ApiKeys.JOIN_GROUP => handleJoinGroupRequest(request) // JoinGroup请求，JoinGroupRequest
+        case ApiKeys.HEARTBEAT => handleHeartbeatRequest(request) // 心跳，HeartbeatRequest
+        case ApiKeys.LEAVE_GROUP => handleLeaveGroupRequest(request) // 离开Group，LeaveGroupRequest
+        case ApiKeys.SYNC_GROUP => handleSyncGroupRequest(request) // 同步Group，SyncGroupRequest
         case ApiKeys.DESCRIBE_GROUPS => handleDescribeGroupRequest(request) // 获取Group信息
         case ApiKeys.LIST_GROUPS => handleListGroupsRequest(request) // 获取Group列表
         case ApiKeys.SASL_HANDSHAKE => handleSaslHandshakeRequest(request) // SASL握手
@@ -947,7 +947,7 @@ class KafkaApis(val requestChannel: RequestChannel,
 
   // 负责处理GroupCoordinatorRequest，查询管理消费者所属的Consumer Group对应的GroupCoordinator的网络位置
   def handleGroupCoordinatorRequest(request: RequestChannel.Request) {
-    // 转换请求为GroupCoordinatorRequest对象
+    // 转换请求体为GroupCoordinatorRequest对象
     val groupCoordinatorRequest = request.body.asInstanceOf[GroupCoordinatorRequest]
     // 根据correlationId构造请求头
     val responseHeader = new ResponseHeader(request.header.correlationId)
@@ -1034,13 +1034,17 @@ class KafkaApis(val requestChannel: RequestChannel,
     requestChannel.sendResponse(new RequestChannel.Response(request, new ResponseSend(request.connectionId, responseHeader, responseBody)))
   }
 
+  // 处理JoinGroupRequest请求
   def handleJoinGroupRequest(request: RequestChannel.Request) {
     import JavaConversions._
 
+    // 转换请求体为JoinGroupRequest对象
     val joinGroupRequest = request.body.asInstanceOf[JoinGroupRequest]
+    // 构造响应头
     val responseHeader = new ResponseHeader(request.header.correlationId)
 
     // the callback for sending a join-group response
+    // 定义回调函数
     def sendResponseCallback(joinResult: JoinGroupResult) {
       val members = joinResult.members map { case (memberId, metadataArray) => (memberId, ByteBuffer.wrap(metadataArray)) }
       val responseBody = new JoinGroupResponse(joinResult.errorCode, joinResult.generationId, joinResult.subProtocol,
@@ -1051,49 +1055,56 @@ class KafkaApis(val requestChannel: RequestChannel,
       requestChannel.sendResponse(new RequestChannel.Response(request, new ResponseSend(request.connectionId, responseHeader, responseBody)))
     }
 
-    if (!authorize(request.session, Read, new Resource(Group, joinGroupRequest.groupId()))) {
+    if (!authorize(request.session, Read, new Resource(Group, joinGroupRequest.groupId()))) { // 检查授权
       val responseBody = new JoinGroupResponse(
         Errors.GROUP_AUTHORIZATION_FAILED.code,
-        JoinGroupResponse.UNKNOWN_GENERATION_ID,
-        JoinGroupResponse.UNKNOWN_PROTOCOL,
-        JoinGroupResponse.UNKNOWN_MEMBER_ID, // memberId
-        JoinGroupResponse.UNKNOWN_MEMBER_ID, // leaderId
+        JoinGroupResponse.UNKNOWN_GENERATION_ID, // -1
+        JoinGroupResponse.UNKNOWN_PROTOCOL, // 空字符串
+        JoinGroupResponse.UNKNOWN_MEMBER_ID, // memberId，空字符串
+        JoinGroupResponse.UNKNOWN_MEMBER_ID, // leaderId，空字符串
         Map.empty[String, ByteBuffer])
+      // 将响应放入RequestChannel等待发送
       requestChannel.sendResponse(new RequestChannel.Response(request, new ResponseSend(request.connectionId, responseHeader, responseBody)))
-    } else {
+    } else { // 授权检查通过
       // let the coordinator to handle join-group
+      // 构造可接受的PartitionAssignor协议集合
       val protocols = joinGroupRequest.groupProtocols().map(protocol =>
         (protocol.name, Utils.toArray(protocol.metadata))).toList
+      // 将JoinGroupRequest交给GroupCoordinator的handleJoinGroup()方法处理
       coordinator.handleJoinGroup(
-        joinGroupRequest.groupId,
-        joinGroupRequest.memberId,
-        request.header.clientId,
-        request.session.clientAddress.toString,
-        joinGroupRequest.sessionTimeout,
+        joinGroupRequest.groupId, // 组ID
+        joinGroupRequest.memberId, // Member ID
+        request.header.clientId, // 客户端ID
+        request.session.clientAddress.toString, // 客户端地址
+        joinGroupRequest.sessionTimeout, // 客户端配置的超时时间
         joinGroupRequest.protocolType,
-        protocols,
-        sendResponseCallback)
+        protocols, // 客户端可接受的PartitionAssignor协议
+        sendResponseCallback) // 回调
     }
   }
 
   def handleSyncGroupRequest(request: RequestChannel.Request) {
     import JavaConversions._
 
+    // 转换请求体为SyncGroupRequest对象
     val syncGroupRequest = request.body.asInstanceOf[SyncGroupRequest]
 
+    // 回调函数
     def sendResponseCallback(memberState: Array[Byte], errorCode: Short) {
       val responseBody = new SyncGroupResponse(errorCode, ByteBuffer.wrap(memberState))
       val responseHeader = new ResponseHeader(request.header.correlationId)
       requestChannel.sendResponse(new Response(request, new ResponseSend(request.connectionId, responseHeader, responseBody)))
     }
 
-    if (!authorize(request.session, Read, new Resource(Group, syncGroupRequest.groupId()))) {
+    if (!authorize(request.session, Read, new Resource(Group, syncGroupRequest.groupId()))) { // 检查授权
+      // 授权未通过，直接调用回调函数返回GROUP_AUTHORIZATION_FAILED错误码
       sendResponseCallback(Array[Byte](), Errors.GROUP_AUTHORIZATION_FAILED.code)
     } else {
+      // 授权通过，交给GroupCoordinator的handleSyncGroup()方法处理
       coordinator.handleSyncGroup(
-        syncGroupRequest.groupId(),
-        syncGroupRequest.generationId(),
-        syncGroupRequest.memberId(),
+        syncGroupRequest.groupId(), // Group ID
+        syncGroupRequest.generationId(), // Group的年代信息
+        syncGroupRequest.memberId(), // Member ID
         syncGroupRequest.groupAssignment().mapValues(Utils.toArray(_)),
         sendResponseCallback
       )
@@ -1101,10 +1112,13 @@ class KafkaApis(val requestChannel: RequestChannel,
   }
 
   def handleHeartbeatRequest(request: RequestChannel.Request) {
+    // 转换请求体对象为HeartbeatRequest类型
     val heartbeatRequest = request.body.asInstanceOf[HeartbeatRequest]
+    // 构造响应头
     val respHeader = new ResponseHeader(request.header.correlationId)
 
     // the callback for sending a heartbeat response
+    // 回调函数
     def sendResponseCallback(errorCode: Short) {
       val response = new HeartbeatResponse(errorCode)
       trace("Sending heartbeat response %s for correlation id %d to client %s."
@@ -1112,16 +1126,19 @@ class KafkaApis(val requestChannel: RequestChannel,
       requestChannel.sendResponse(new RequestChannel.Response(request, new ResponseSend(request.connectionId, respHeader, response)))
     }
 
+    // 检查授权
     if (!authorize(request.session, Read, new Resource(Group, heartbeatRequest.groupId))) {
+      // 授权未通过
       val heartbeatResponse = new HeartbeatResponse(Errors.GROUP_AUTHORIZATION_FAILED.code)
       requestChannel.sendResponse(new Response(request, new ResponseSend(request.connectionId, respHeader, heartbeatResponse)))
     }
-    else {
+    else { // 授权通过
       // let the coordinator to handle heartbeat
+      // 交由GroupCoordinator的handleHeartbeat()方法处理
       coordinator.handleHeartbeat(
-        heartbeatRequest.groupId(),
-        heartbeatRequest.memberId(),
-        heartbeatRequest.groupGenerationId(),
+        heartbeatRequest.groupId(), // Group ID
+        heartbeatRequest.memberId(), // Member ID
+        heartbeatRequest.groupGenerationId(), // Group年代信息
         sendResponseCallback)
     }
   }
@@ -1151,11 +1168,15 @@ class KafkaApis(val requestChannel: RequestChannel,
     quotaManagers
   }
 
+  // 处理LeaveGroupRequest请求
   def handleLeaveGroupRequest(request: RequestChannel.Request) {
+    // 转换请求体为LeaveGroupRequest对象
     val leaveGroupRequest = request.body.asInstanceOf[LeaveGroupRequest]
+    // 构造响应头
     val respHeader = new ResponseHeader(request.header.correlationId)
 
     // the callback for sending a leave-group response
+    // 定义回调函数
     def sendResponseCallback(errorCode: Short) {
       val response = new LeaveGroupResponse(errorCode)
       trace("Sending leave group response %s for correlation id %d to client %s."
@@ -1163,11 +1184,13 @@ class KafkaApis(val requestChannel: RequestChannel,
       requestChannel.sendResponse(new RequestChannel.Response(request, new ResponseSend(request.connectionId, respHeader, response)))
     }
 
-    if (!authorize(request.session, Read, new Resource(Group, leaveGroupRequest.groupId))) {
+    if (!authorize(request.session, Read, new Resource(Group, leaveGroupRequest.groupId))) { // 检查授权
+      // 授权未通过
       val leaveGroupResponse = new LeaveGroupResponse(Errors.GROUP_AUTHORIZATION_FAILED.code)
       requestChannel.sendResponse(new Response(request, new ResponseSend(request.connectionId, respHeader, leaveGroupResponse)))
     } else {
       // let the coordinator to handle leave-group
+      // 授权通过，交给GroupCoordinator的handleLeaveGroup()处理
       coordinator.handleLeaveGroup(
         leaveGroupRequest.groupId(),
         leaveGroupRequest.memberId(),

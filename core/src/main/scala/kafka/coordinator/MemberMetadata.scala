@@ -94,6 +94,8 @@ private[coordinator] class MemberMetadata(val memberId: String,
 
   /**
    * Check if the provided protocol metadata matches the currently stored metadata.
+    *
+    * 检查当前MemberMetadata支持的PartitionAssignor是否与传入的protocols中的PartitionAssignor匹配
    */
   def matches(protocols: List[(String, Array[Byte])]): Boolean = {
     if (protocols.size != this.supportedProtocols.size)
