@@ -665,6 +665,7 @@ class GroupCoordinator(val brokerId: Int,
     propagateAssignment(group, errorCode)
   }
 
+  // 传递分配结果，其实内部调用了KafkaApis中处理SyncGroupRequest时定义的回调函数
   private def propagateAssignment(group: GroupMetadata, errorCode: Short) {
     for (member <- group.allMemberMetadata) { // 遍历所有的Member
       if (member.awaitingSyncCallback != null) {

@@ -85,9 +85,10 @@ private[coordinator] class MemberMetadata(val memberId: String,
    * Get metadata corresponding to the provided protocol.
    */
   def metadata(protocol: String): Array[Byte] = {
+    // 匹配查找传入的protocol对应的PartitionAssignor metadata
     supportedProtocols.find(_._1 == protocol) match {
       case Some((_, metadata)) => metadata
-      case None =>
+      case None => // 未查找到会返回IllegalArgumentException异常
         throw new IllegalArgumentException("Member does not support protocol")
     }
   }
@@ -98,9 +99,11 @@ private[coordinator] class MemberMetadata(val memberId: String,
     * 检查当前MemberMetadata支持的PartitionAssignor是否与传入的protocols中的PartitionAssignor匹配
    */
   def matches(protocols: List[(String, Array[Byte])]): Boolean = {
+    // 大小不一样，必然是不匹配的
     if (protocols.size != this.supportedProtocols.size)
       return false
 
+    // 遍历进行一一对比，如有不同则是不匹配的
     for (i <- 0 until protocols.size) {
       val p1 = protocols(i)
       val p2 = supportedProtocols(i)

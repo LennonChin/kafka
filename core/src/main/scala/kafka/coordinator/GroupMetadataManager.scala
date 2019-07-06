@@ -682,7 +682,7 @@ class GroupMetadataManager(val brokerId: Int,
     val numExpiredOffsetsRemoved = inWriteLock(offsetExpireLock) {
       // 得到offsetsCache中所有过期的OffsetAndMetadata对象
       val expiredOffsets = offsetsCache.filter { case (groupTopicPartition, offsetAndMetadata) =>
-        // 所有过期时间标记小于当前时间，即认定为过期
+        // 所有过期时间标记小于当前时间，即认定为过期，过期时间默认是添加操作时间后的24*60*60*1000L毫秒，即保留一天
         offsetAndMetadata.expireTimestamp < startMs
       }
 
@@ -767,13 +767,18 @@ class GroupMetadataManager(val brokerId: Int,
   /**
    * Gets the partition count of the offsets topic from ZooKeeper.
    * If the topic does not exist, the configured partition count is returned.
+    *
+    * 获取Offsets Topic主题的分区数量
    */
   private def getOffsetsTopicPartitionCount = {
     val topic = TopicConstants.GROUP_METADATA_TOPIC_NAME
+    // 尝试从Zookeeper中读取__consumer_offsets主题的分区信息
     val topicData = zkUtils.getPartitionAssignmentForTopics(Seq(topic))
     if (topicData(topic).nonEmpty)
+      // 能读取到就取Zookeeper存储的分区数量
       topicData(topic).size
     else
+      // 否则__consumer_offsets主题默认分区数量为50
       config.offsetsTopicNumPartitions
   }
 

@@ -246,6 +246,7 @@ private[coordinator] class GroupMetadata(val groupId: String, val protocolType: 
     votes.maxBy(_._2)._1
   }
 
+  // 得到所有Member支持的PartitionAssignor协议集合
   private def candidateProtocols = {
     // get the set of protocols that are commonly supported by all members
     allMemberMetadata

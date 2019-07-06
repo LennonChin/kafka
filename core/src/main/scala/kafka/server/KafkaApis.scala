@@ -78,7 +78,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         case ApiKeys.FETCH => handleFetchRequest(request) // 拉取
         case ApiKeys.LIST_OFFSETS => handleOffsetRequest(request) // 获取offsets
         case ApiKeys.METADATA => handleTopicMetadataRequest(request) // 获取元数据（由生产者或消费者客户端向服务端获取集群元数据）
-        case ApiKeys.LEADER_AND_ISR => handleLeaderAndIsrRequest(request) // 操作Leader及ISR信息
+        case ApiKeys.LEADER_AND_ISR => handleLeaderAndIsrRequest(request) // 操作Leader及ISR信息，LeaderAndIsrRequest
         case ApiKeys.STOP_REPLICA => handleStopReplicaRequest(request) // 停止副本，可能会删除副本
         case ApiKeys.UPDATE_METADATA_KEY => handleUpdateMetadataRequest(request) // 更新元数据（由KafkaController要求Broker更新）
         case ApiKeys.CONTROLLED_SHUTDOWN_KEY => handleControlledShutdownRequest(request)
@@ -90,7 +90,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         case ApiKeys.LEAVE_GROUP => handleLeaveGroupRequest(request) // 离开Group，LeaveGroupRequest
         case ApiKeys.SYNC_GROUP => handleSyncGroupRequest(request) // 同步Group，SyncGroupRequest
         case ApiKeys.DESCRIBE_GROUPS => handleDescribeGroupRequest(request) // 获取Group信息
-        case ApiKeys.LIST_GROUPS => handleListGroupsRequest(request) // 获取Group列表
+        case ApiKeys.LIST_GROUPS => handleListGroupsRequest(request) // 获取Group列表，ListGroupsRequest
         case ApiKeys.SASL_HANDSHAKE => handleSaslHandshakeRequest(request) // SASL握手
         case ApiKeys.API_VERSIONS => handleApiVersionsRequest(request) // 获取API Version
         case requestId => throw new KafkaException("Unknown api code " + requestId) // 未知
@@ -732,14 +732,18 @@ class KafkaApis(val requestChannel: RequestChannel,
     val aliveBrokers = metadataCache.getAliveBrokers
     val offsetsTopicReplicationFactor =
       if (aliveBrokers.nonEmpty)
+        // offsetsTopicReplicationFactor由offsets.topic.replication.factor参数配置
         Math.min(config.offsetsTopicReplicationFactor.toInt, aliveBrokers.length)
       else
         config.offsetsTopicReplicationFactor.toInt
     // 创建__consumer_offsets
-    createTopic(TopicConstants.GROUP_METADATA_TOPIC_NAME, config.offsetsTopicPartitions,
-      offsetsTopicReplicationFactor, coordinator.offsetsTopicConfigs)
+    createTopic(TopicConstants.GROUP_METADATA_TOPIC_NAME, // __consumer_offsets
+      config.offsetsTopicPartitions, // offsets.topic.num.partitions
+      offsetsTopicReplicationFactor,
+      coordinator.offsetsTopicConfigs)
   }
 
+  // 获取存储Consumer Group中消费者消费的offset的主题__consumer_offsets，如果获取不到就创建
   private def getOrCreateGroupMetadataTopic(securityProtocol: SecurityProtocol): MetadataResponse.TopicMetadata = {
     val topicMetadata = metadataCache.getTopicMetadata(Set(TopicConstants.GROUP_METADATA_TOPIC_NAME), securityProtocol)
     topicMetadata.headOption.getOrElse(createGroupMetadataTopic())
@@ -1083,6 +1087,7 @@ class KafkaApis(val requestChannel: RequestChannel,
     }
   }
 
+  // 处理SyncGroupRequest请求
   def handleSyncGroupRequest(request: RequestChannel.Request) {
     import JavaConversions._
 
@@ -1105,7 +1110,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         syncGroupRequest.groupId(), // Group ID
         syncGroupRequest.generationId(), // Group的年代信息
         syncGroupRequest.memberId(), // Member ID
-        syncGroupRequest.groupAssignment().mapValues(Utils.toArray(_)),
+        syncGroupRequest.groupAssignment().mapValues(Utils.toArray(_)), // 分配结果
         sendResponseCallback
       )
     }
