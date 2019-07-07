@@ -213,7 +213,7 @@ private[coordinator] class GroupMetadata(val groupId: String, val protocolType: 
   // TODO: decide if ids should be predictable or random
   def generateMemberIdSuffix = UUID.randomUUID().toString
 
-  // 只有在State和AwaitingSync的状态下才可以切换到PreparingRebalance状态
+  // 判断GroupMetadata是否在Stable或AwaitingSync的状态
   def canRebalance = state == Stable || state == AwaitingSync
 
   def transitionTo(groupState: GroupState) {

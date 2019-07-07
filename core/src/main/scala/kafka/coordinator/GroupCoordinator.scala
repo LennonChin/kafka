@@ -31,8 +31,8 @@ import org.apache.kafka.common.requests.{OffsetFetchResponse, JoinGroupRequest}
 
 import scala.collection.{Map, Seq, immutable}
 
-case class GroupConfig(groupMinSessionTimeoutMs: Int,
-                       groupMaxSessionTimeoutMs: Int)
+case class GroupConfig(groupMinSessionTimeoutMs: Int, // Consumer Group中消费者的Session过期的最小时长
+                       groupMaxSessionTimeoutMs: Int) // Consumer Group中消费者的Session过期的最大时长
 
 case class JoinGroupResult(members: Map[String, Array[Byte]],
                            memberId: String,
@@ -62,7 +62,9 @@ class GroupCoordinator(val brokerId: Int,
                        val heartbeatPurgatory: DelayedOperationPurgatory[DelayedHeartbeat],
                        val joinPurgatory: DelayedOperationPurgatory[DelayedJoin],
                        time: Time) extends Logging {
+  // 处理JoinGroupRequest的回调函数类型
   type JoinCallback = JoinGroupResult => Unit
+  // 处理SyncGroupRequest的回调函数类型
   type SyncCallback = (Array[Byte], Short) => Unit
 
   this.logIdent = "[GroupCoordinator " + brokerId + "]: "
@@ -187,7 +189,7 @@ class GroupCoordinator(val brokerId: Int,
 
           case PreparingRebalance =>
             if (memberId == JoinGroupRequest.UNKNOWN_MEMBER_ID) {
-              // 未知的新Member申请加入，则创建Member并分配memberId，并加入GroupMetadata中
+              // 未知的新Member申请加入，则创建MemberMetadata并分配memberId，并加入GroupMetadata中
               addMemberAndRebalance(sessionTimeoutMs, clientId, clientHost, protocols, group, responseCallback)
             } else {
               // 已知Member重新申请加入，则更新GroupMetadata中记录的Member信息
@@ -367,6 +369,7 @@ class GroupCoordinator(val brokerId: Int,
     delayedGroupStore.foreach(groupManager.store)
   }
 
+  // 处理LeaveGroupRequest
   def handleLeaveGroup(groupId: String, consumerId: String, responseCallback: Short => Unit) {
     if (!isActive.get) { // 检查GroupCoordinator是否在运行
       // 调用回调函数，返回错误码GROUP_COORDINATOR_NOT_AVAILABLE
@@ -626,7 +629,7 @@ class GroupCoordinator(val brokerId: Int,
 
   /**
     * 在handleGroupImmigration()方法中传入GroupMetadataManager.loadGroupsForPartition()方法的回调函数
-    * 当出现GroupMetadata重复加载时，会调用它更新心跳
+    * 当出现GroupMetadata重新加载时，会调用它更新心跳
     */
   private def onGroupLoaded(group: GroupMetadata) {
     group synchronized {
@@ -761,7 +764,7 @@ class GroupCoordinator(val brokerId: Int,
 
   private def maybePrepareRebalance(group: GroupMetadata) {
     group synchronized { // 加锁
-      // 只有在State和AwaitingSync的状态下才可以切换到PreparingRebalance状态
+      // 只有在Stable和AwaitingSync的状态下才会执行prepareRebalance()
       if (group.canRebalance)
         prepareRebalance(group)
     }
@@ -793,7 +796,7 @@ class GroupCoordinator(val brokerId: Int,
     trace("Member %s in group %s has failed".format(member.memberId, group.groupId))
     group.remove(member.memberId) // 将Member从对应的GroupMetadata中移除
     group.currentState match { // 根据GroupMetadata状态进行处理
-      // 误操作
+      // 无操作
       case Dead =>
       // 之前的分区分配可能已经失效了，将GroupMetadata切换成PreparingRebalance状态
       case Stable | AwaitingSync => maybePrepareRebalance(group)
@@ -839,7 +842,7 @@ class GroupCoordinator(val brokerId: Int,
       }
       if (!group.is(Dead)) {
         // 递增generationId，选择该Consumer Group最终使用的PartitionAssignor
-        group.initNextGeneration()
+        group.initNextGeneration() // 此处还会将GroupMetadata的状态转换为AwaitingSync
         info("Stabilized group %s generation %s".format(group.groupId, group.generationId))
 
         // trigger the awaiting join group response callback for all the members after rebalancing

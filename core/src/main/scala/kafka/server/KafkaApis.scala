@@ -1116,6 +1116,7 @@ class KafkaApis(val requestChannel: RequestChannel,
     }
   }
 
+  // 处理HeartbeatRequest请求
   def handleHeartbeatRequest(request: RequestChannel.Request) {
     // 转换请求体对象为HeartbeatRequest类型
     val heartbeatRequest = request.body.asInstanceOf[HeartbeatRequest]

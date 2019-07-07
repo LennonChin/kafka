@@ -36,16 +36,16 @@ import kafka.message.{NoCompressionCodec, CompressionCodec}
  * @param offsetCommitRequiredAcks The required acks before the commit can be accepted. In general, the default (-1)
  *                                 should not be overridden.
  */
-case class OffsetConfig(maxMetadataSize: Int = OffsetConfig.DefaultMaxMetadataSize,
-                        loadBufferSize: Int = OffsetConfig.DefaultLoadBufferSize,
-                        offsetsRetentionMs: Long = OffsetConfig.DefaultOffsetRetentionMs,
-                        offsetsRetentionCheckIntervalMs: Long = OffsetConfig.DefaultOffsetsRetentionCheckIntervalMs,
-                        offsetsTopicNumPartitions: Int = OffsetConfig.DefaultOffsetsTopicNumPartitions,
-                        offsetsTopicSegmentBytes: Int = OffsetConfig.DefaultOffsetsTopicSegmentBytes,
-                        offsetsTopicReplicationFactor: Short = OffsetConfig.DefaultOffsetsTopicReplicationFactor,
-                        offsetsTopicCompressionCodec: CompressionCodec = OffsetConfig.DefaultOffsetsTopicCompressionCodec,
-                        offsetCommitTimeoutMs: Int = OffsetConfig.DefaultOffsetCommitTimeoutMs,
-                        offsetCommitRequiredAcks: Short = OffsetConfig.DefaultOffsetCommitRequiredAcks)
+case class OffsetConfig(maxMetadataSize: Int = OffsetConfig.DefaultMaxMetadataSize, // OffsetMetadata中metadata携带信息的最大大小，默认为4KB
+                        loadBufferSize: Int = OffsetConfig.DefaultLoadBufferSize, // 用于读取Offsets Topic中Offset的读缓冲大小，默认为5MB
+                        offsetsRetentionMs: Long = OffsetConfig.DefaultOffsetRetentionMs, // Offsets Topic中Offset保留的最大时长。默认为24小时
+                        offsetsRetentionCheckIntervalMs: Long = OffsetConfig.DefaultOffsetsRetentionCheckIntervalMs, // 检查Offset是否过期的间隔时长，默认为600秒
+                        offsetsTopicNumPartitions: Int = OffsetConfig.DefaultOffsetsTopicNumPartitions, // Offsets Topic的分区个数，默认为50个
+                        offsetsTopicSegmentBytes: Int = OffsetConfig.DefaultOffsetsTopicSegmentBytes, // Offsets Topic的Segment大小，默认为100MB
+                        offsetsTopicReplicationFactor: Short = OffsetConfig.DefaultOffsetsTopicReplicationFactor, // Offsets Topic的副本因子，默认为3个
+                        offsetsTopicCompressionCodec: CompressionCodec = OffsetConfig.DefaultOffsetsTopicCompressionCodec, // Offsets Topic的压缩器，默认没有压缩器
+                        offsetCommitTimeoutMs: Int = OffsetConfig.DefaultOffsetCommitTimeoutMs, // Offsets Topic的处理OffsetCommitRequest的超时时间，默认为5秒
+                        offsetCommitRequiredAcks: Short = OffsetConfig.DefaultOffsetCommitRequiredAcks) // Offsets Topic处理生产消息的ACK，默认为-1
 
 object OffsetConfig {
   val DefaultMaxMetadataSize = 4096
