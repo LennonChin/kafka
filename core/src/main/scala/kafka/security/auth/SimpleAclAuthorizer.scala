@@ -64,16 +64,24 @@ object SimpleAclAuthorizer {
   //prefix of all the change notification sequence node.
   val AclChangedPrefix = "acl_changes_"
 
+  // Acl对象集合以及zkVersion
   private case class VersionedAcls(acls: Set[Acl], zkVersion: Int)
 }
 
+// 用于权限控制，将权限信息储存在ZooKeeper中
 class SimpleAclAuthorizer extends Authorizer with Logging {
   private val authorizerLogger = Logger.getLogger("kafka.authorizer.logger")
+  // 用于记录配置文件中指定的超级用户的信息
   private var superUsers = Set.empty[KafkaPrincipal]
+  /**
+    * 默认值false，表示如果一个资源在ACLs中没有相关记录时，除了超级用户，任何用户都不能访问。
+    * 可以通过allow.everyone.if.no.acl.found配置项修改默认行为。
+    */
   private var shouldAllowEveryoneIfNoAclIsFound = false
   private var zkUtils: ZkUtils = null
+  // ZooKeeper上的监听器
   private var aclChangeListener: ZkNodeChangeNotificationListener = null
-
+  // ACLs在内存中的缓存
   private val aclCache = new scala.collection.mutable.HashMap[Resource, VersionedAcls]
   private val lock = new ReentrantReadWriteLock()
 
@@ -86,58 +94,79 @@ class SimpleAclAuthorizer extends Authorizer with Logging {
 
   /**
    * Guaranteed to be called before any authorize call is made.
+    * 初始化操作
    */
   override def configure(javaConfigs: util.Map[String, _]) {
     val configs = javaConfigs.asScala
+    // 对配置信息进行转换
     val props = new java.util.Properties()
     configs.foreach { case (key, value) => props.put(key, value.toString) }
-
+    // 获取超级用户的信息
     superUsers = configs.get(SimpleAclAuthorizer.SuperUsersProp).collect {
       case str: String if str.nonEmpty => str.split(";").map(s => KafkaPrincipal.fromString(s.trim)).toSet
     }.getOrElse(Set.empty[KafkaPrincipal])
 
+    // 根据allow.everyone.if.no.acl.found配置初始化shouldAllowEveryoneIfNoAclIsFound
     shouldAllowEveryoneIfNoAclIsFound = configs.get(SimpleAclAuthorizer.AllowEveryoneIfNoAclIsFoundProp).exists(_.toString.toBoolean)
 
     // Use `KafkaConfig` in order to get the default ZK config values if not present in `javaConfigs`. Note that this
     // means that `KafkaConfig.zkConnect` must always be set by the user (even if `SimpleAclAuthorizer.ZkUrlProp` is also
     // set).
     val kafkaConfig = KafkaConfig.fromProps(props, doLog = false)
+    // 获取Zookeeper地址、连接超时时间、Session过期时间等配置
+    // authorizer.zookeeper.url，zookeeper.connect
     val zkUrl = configs.get(SimpleAclAuthorizer.ZkUrlProp).map(_.toString).getOrElse(kafkaConfig.zkConnect)
+    // authorizer.zookeeper.connection.timeout.ms
     val zkConnectionTimeoutMs = configs.get(SimpleAclAuthorizer.ZkConnectionTimeOutProp).map(_.toString.toInt).getOrElse(kafkaConfig.zkConnectionTimeoutMs)
+    // zookeeper.session.timeout.ms
     val zkSessionTimeOutMs = configs.get(SimpleAclAuthorizer.ZkSessionTimeOutProp).map(_.toString.toInt).getOrElse(kafkaConfig.zkSessionTimeoutMs)
 
+    // 创建ZkUtils用于与Zookeeper交互
     zkUtils = ZkUtils(zkUrl,
                       zkConnectionTimeoutMs,
                       zkSessionTimeOutMs,
                       JaasUtils.isZkSecurityEnabled())
+
+    // 检测/kafka-acl这个持久节点在Zookeeper中是否存在，如果不存在就创建
     zkUtils.makeSurePersistentPathExists(SimpleAclAuthorizer.AclZkPath)
 
+    // 将Zookeeper中的ACLs信息加载到aclCache字段中
     loadCache()
 
+    // 检测/kafka-acl-changes节点在Zookeeper中是否存在，如果不存在就创建
     zkUtils.makeSurePersistentPathExists(SimpleAclAuthorizer.AclChangedZkPath)
+    // 添加Zookeeper监听器，监听/kafka-acl-changes节点
     aclChangeListener = new ZkNodeChangeNotificationListener(zkUtils, SimpleAclAuthorizer.AclChangedZkPath, SimpleAclAuthorizer.AclChangedPrefix, AclChangedNotificationHandler)
     aclChangeListener.init()
   }
 
+  // 针对客户端传入的身份信息及请求操作的资源信息决定是否授权
   override def authorize(session: Session, operation: Operation, resource: Resource): Boolean = {
+    // 获取用户身份，即username
     val principal = session.principal
+    // 获取用户Host地址
     val host = session.clientAddress.getHostAddress
+    // 获取指定资源的ACLs信息
     val acls = getAcls(resource) ++ getAcls(new Resource(resource.resourceType, Resource.WildCardResource))
 
     //check if there is any Deny acl match that would disallow this operation.
+    // 检测是否存在Deny类型的ACLs信息
     val denyMatch = aclMatch(session, operation, resource, principal, host, Deny, acls)
 
     //if principal is allowed to read or write we allow describe by default, the reverse does not apply to Deny.
+    // 如果有Describe权限，则默认提供Read和Write权限
     val ops = if (Describe == operation)
       Set[Operation](operation, Read, Write)
     else
       Set[Operation](operation)
 
     //now check if there is any allow acl that will allow this operation.
+    // 检测是否存在Allow类型的ACLs信息
     val allowMatch = ops.exists(operation => aclMatch(session, operation, resource, principal, host, Allow, acls))
 
     //we allow an operation if a user is a super user or if no acls are found and user has configured to allow all users
     //when no acls are found or if no deny acls are found and at least one allow acls matches.
+    // 检测是否是超级管理员，检测是否开启了shouldAllowEveryoneIfNoAclIsFound，检测之前的匹配是否成功
     val authorized = isSuperUser(operation, resource, principal, host) ||
       isEmptyAclAndAuthorized(operation, resource, principal, host, acls) ||
       (!denyMatch && allowMatch)
@@ -161,11 +190,12 @@ class SimpleAclAuthorizer extends Authorizer with Logging {
   }
 
   private def aclMatch(session: Session, operations: Operation, resource: Resource, principal: KafkaPrincipal, host: String, permissionType: PermissionType, acls: Set[Acl]): Boolean = {
+    // 在传入的acls集合中查找
     acls.find ( acl =>
-      acl.permissionType == permissionType
-        && (acl.principal == principal || acl.principal == Acl.WildCardPrincipal)
-        && (operations == acl.operation || acl.operation == All)
-        && (acl.host == host || acl.host == Acl.WildCardHost)
+      acl.permissionType == permissionType // 匹配PermissionType
+        && (acl.principal == principal || acl.principal == Acl.WildCardPrincipal) // 匹配身份信息以及通配符
+        && (operations == acl.operation || acl.operation == All) // 匹配操作以及通配符
+        && (acl.host == host || acl.host == Acl.WildCardHost) // 匹配主机名以及通配符
     ).map { acl: Acl =>
       authorizerLogger.debug(s"operation = $operations on resource = $resource from host = $host is $permissionType based on acl = $acl")
       true
@@ -228,13 +258,21 @@ class SimpleAclAuthorizer extends Authorizer with Logging {
 
   private def loadCache()  {
     inWriteLock(lock) {
+      // 获取哦/kafka-acl子节点集合，表示资源的类型，如：Topic、Cluster、ConsumerGroup
       val resourceTypes = zkUtils.getChildren(SimpleAclAuthorizer.AclZkPath)
+      // 遍历资源类型集合
       for (rType <- resourceTypes) {
+        // 转换为ResourceType类型
         val resourceType = ResourceType.fromString(rType)
+        // 拼接/kafka-acl/[ResourceType]路径
         val resourceTypePath = SimpleAclAuthorizer.AclZkPath + "/" + resourceType.name
+        // 获取/kafka-acl/[ResourceType]下字节点的集合，表示具体的资源
         val resourceNames = zkUtils.getChildren(resourceTypePath)
+        // 遍历每个资源
         for (resourceName <- resourceNames) {
+          // 获取对应节点的JSON数据并转换为VersionedAcls
           val versionedAcls = getAclsFromZk(Resource(resourceType, resourceName.toString))
+          // 将VersionedAcls对象保存到aclCache集合中
           updateCache(new Resource(resourceType, resourceName), versionedAcls)
         }
       }
@@ -358,7 +396,9 @@ class SimpleAclAuthorizer extends Authorizer with Logging {
     override def processNotification(notificationMessage: String) {
       val resource: Resource = Resource.fromString(notificationMessage)
       inWriteLock(lock) {
+        // 从Zookeeper监听器传递过来的信息中读取指定的资源的ACLs信息
         val versionedAcls = getAclsFromZk(resource)
+        // 将新的VersionedAcls更新到aclCache集合中
         updateCache(resource, versionedAcls)
       }
     }

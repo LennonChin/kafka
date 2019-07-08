@@ -86,9 +86,9 @@ object Acl {
  * Principal P has permissionType PT on Operation O1 from hosts H1.
  * </pre>
  * @param principal A value of *:* indicates all users.
- * @param permissionType
+ * @param permissionType Allow或者Deny
  * @param host A value of * indicates all hosts.
- * @param operation A value of ALL indicates all operations.
+ * @param operation A value of ALL indicates all operations. 有Read、Write、Create、Delete、Alter、Describe、ClusterAction、All八种取值
  */
 case class Acl(principal: KafkaPrincipal, permissionType: PermissionType, host: String, operation: Operation) {
 

@@ -41,8 +41,11 @@ public class LoginManager {
     private LoginManager(LoginType loginType, boolean hasKerberos, Map<String, ?> configs) throws IOException, LoginException {
         this.loginType = loginType;
         String loginContext = loginType.contextName();
+        // 根据是否使用Kerberos来选择Login对象
         login = hasKerberos ? new KerberosLogin() : new DefaultLogin();
+        // 配置
         login.configure(configs, loginContext);
+        // 登录
         login.login();
     }
 
@@ -65,6 +68,7 @@ public class LoginManager {
         synchronized (LoginManager.class) {
             LoginManager loginManager = CACHED_INSTANCES.get(loginType);
             if (loginManager == null) {
+                // 创建LoginManager对象，在该方法中会调用Login的login()方法
                 loginManager = new LoginManager(loginType, hasKerberos, configs);
                 CACHED_INSTANCES.put(loginType, loginManager);
             }

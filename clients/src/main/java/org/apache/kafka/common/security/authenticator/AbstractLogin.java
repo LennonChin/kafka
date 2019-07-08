@@ -43,7 +43,12 @@ import java.util.Map;
 public abstract class AbstractLogin implements Login {
     private static final Logger log = LoggerFactory.getLogger(AbstractLogin.class);
 
+    /**
+     * 指明了使用LoginContext的名称，Kafka客户端中该字段值为KafkaClient，
+     * 与kafka_client_jaas.conf配置文件第一行的"KafkaClient"匹配才能找到此LoginContext
+     */
     private String loginContextName;
+    // LogContext对象，与loginContextName指定的名称对应，其中可以包含多个LoginModule
     private LoginContext loginContext;
 
 
@@ -54,18 +59,23 @@ public abstract class AbstractLogin implements Login {
 
     @Override
     public LoginContext login() throws LoginException {
-        String jaasConfigFile = System.getProperty(JaasUtils.JAVA_LOGIN_CONFIG_PARAM);
+        String jaasConfigFile = System.getProperty(JaasUtils.JAVA_LOGIN_CONFIG_PARAM); // java.security.auth.login.config
+        // 是否指定了java.security.auth.login.config配置，该值配置的即是配置文件的路径，如./config/kafka_client_jaas.conf
         if (jaasConfigFile == null) {
             log.debug("System property '" + JaasUtils.JAVA_LOGIN_CONFIG_PARAM + "' is not set, using default JAAS configuration.");
         }
         AppConfigurationEntry[] configEntries = Configuration.getConfiguration().getAppConfigurationEntry(loginContextName);
+
+        // 检测是否能找到"KafkaClient"这个LoginContext的配置
         if (configEntries == null) {
             String errorMessage = "Could not find a '" + loginContextName + "' entry in the JAAS configuration. System property '" +
                 JaasUtils.JAVA_LOGIN_CONFIG_PARAM + "' is " + (jaasConfigFile == null ? "not set" : jaasConfigFile);
             throw new IllegalArgumentException(errorMessage);
         }
 
+        // 创建LoginContext对象
         loginContext = new LoginContext(loginContextName, new LoginCallbackHandler());
+        // 调用LoginContext的login()方法完成认证
         loginContext.login();
         log.info("Successfully logged in.");
         return loginContext;
@@ -73,6 +83,7 @@ public abstract class AbstractLogin implements Login {
 
     @Override
     public Subject subject() {
+        // 返回PlainLoginModule中设置好用户名和密码的Subject对象
         return loginContext.getSubject();
     }
 

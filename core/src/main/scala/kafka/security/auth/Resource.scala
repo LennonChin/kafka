@@ -32,9 +32,9 @@ object Resource {
 
 /**
  *
- * @param resourceType type of resource.
+ * @param resourceType type of resource. 资源类型
  * @param name name of the resource, for topic this will be topic name , for group it will be group name. For cluster type
- *             it will be a constant string kafka-cluster.
+ *             it will be a constant string kafka-cluster. 资源名称
  */
 case class Resource(val resourceType: ResourceType, val name: String) {
 

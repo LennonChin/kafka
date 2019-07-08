@@ -45,6 +45,7 @@ public class ChannelBuilders {
                                         boolean saslHandshakeRequestEnable) {
         ChannelBuilder channelBuilder;
 
+        // 根据不同的SecurityProtocol进行分别处理
         switch (securityProtocol) {
             case SSL:
                 requireNonNullMode(mode, securityProtocol);
@@ -67,6 +68,7 @@ public class ChannelBuilders {
                 throw new IllegalArgumentException("Unexpected securityProtocol " + securityProtocol);
         }
 
+        // 调用ChannelBuilder的configure()方法配置ChannelBuilder对象
         channelBuilder.configure(configs);
         return channelBuilder;
     }

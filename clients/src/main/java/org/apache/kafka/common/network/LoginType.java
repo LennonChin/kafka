@@ -24,8 +24,8 @@ import org.apache.kafka.common.security.JaasUtils;
  * for login.
  */
 public enum LoginType {
-    CLIENT(JaasUtils.LOGIN_CONTEXT_CLIENT),
-    SERVER(JaasUtils.LOGIN_CONTEXT_SERVER);
+    CLIENT(JaasUtils.LOGIN_CONTEXT_CLIENT), // KafkaClient
+    SERVER(JaasUtils.LOGIN_CONTEXT_SERVER); // KafkaServer
 
     private final String contextName;
 

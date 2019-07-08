@@ -309,6 +309,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
 			 * 同时唤醒等待Metadata更新完成的线程
 			 */
 			this.metadata.update(Cluster.bootstrap(addresses), time.milliseconds());
+			// 根据配置的协议，创建不同的ChannelBuilder
             ChannelBuilder channelBuilder = ClientUtils.createChannelBuilder(config.values());
             // 创建NetworkClient网络I/O核心
             NetworkClient client = new NetworkClient(

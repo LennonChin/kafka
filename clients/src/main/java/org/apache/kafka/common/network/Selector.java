@@ -194,7 +194,7 @@ public class Selector implements Selectable {
         }
         // 注册OP_CONNECT键
         SelectionKey key = socketChannel.register(nioSelector, SelectionKey.OP_CONNECT);
-        // 创建KafkaChannel对象
+        // 创建KafkaChannel对象，调用ChannelBuilder的buildChannel()方法创建KafkaChannel对象，之后会连接服务端进行交互
         KafkaChannel channel = channelBuilder.buildChannel(id, key, maxReceiveSize);
         // 将创建的KafkaChannel作为SelectionKey键对象的附件
         key.attach(channel);

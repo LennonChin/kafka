@@ -31,36 +31,45 @@ public class PlainLoginModule implements LoginModule {
     private static final String PASSWORD_CONFIG = "password";
 
     static {
+        // 注册PlainSaslServerProvider，在PlainSaslServerProvider中则以Map的方式记录了PlainSaslServerFactory工厂类的名称
         PlainSaslServerProvider.initialize();
     }
 
     @Override
     public void initialize(Subject subject, CallbackHandler callbackHandler, Map<String, ?> sharedState, Map<String, ?> options) {
+        // 读取username
         String username = (String) options.get(USERNAME_CONFIG);
         if (username != null)
+            // 将username添加到Subject中
             subject.getPublicCredentials().add(username);
+        // 读取password
         String password = (String) options.get(PASSWORD_CONFIG);
         if (password != null)
+            // 将password添加到Subject中
             subject.getPrivateCredentials().add(password);
     }
 
     @Override
     public boolean login() throws LoginException {
+        // 直接返回true
         return true;
     }
 
     @Override
     public boolean logout() throws LoginException {
+        // 直接返回true
         return true;
     }
 
     @Override
     public boolean commit() throws LoginException {
+        // 直接返回true
         return true;
     }
 
     @Override
     public boolean abort() throws LoginException {
+        // 直接返回false
         return false;
     }
 }

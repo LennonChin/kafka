@@ -363,6 +363,7 @@ class KafkaApis(val requestChannel: RequestChannel,
     }
   }
 
+  // 用于权限验证，使用的是Authorizer的方法
   private def authorize(session: Session, operation: Operation, resource: Resource): Boolean =
     authorizer.map(_.authorize(session, operation, resource)).getOrElse(true)
 

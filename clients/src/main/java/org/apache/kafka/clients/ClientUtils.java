@@ -76,10 +76,14 @@ public class ClientUtils {
      * @return configured ChannelBuilder based on the configs.
      */
     public static ChannelBuilder createChannelBuilder(Map<String, ?> configs) {
-        SecurityProtocol securityProtocol = SecurityProtocol.forName((String) configs.get(CommonClientConfigs.SECURITY_PROTOCOL_CONFIG));
+        // 根据"security.protocol"配置项的值，得到对应的SecurityProtocol对象，也即是创建生产者或消费者时设置的props.put("security.protocol", "SASL_PLAINTEXT");
+        SecurityProtocol securityProtocol = SecurityProtocol.forName((String) configs.get(CommonClientConfigs.SECURITY_PROTOCOL_CONFIG)); // security.protocol
+        // 检查是否支持，可支持的有PLAINTEXT、SSL、SASL_PLAINTEXT、SASL_SSL
         if (!SecurityProtocol.nonTestingValues().contains(securityProtocol))
             throw new ConfigException("Invalid SecurityProtocol " + securityProtocol);
-        String clientSaslMechanism = (String) configs.get(SaslConfigs.SASL_MECHANISM);
+        // // 根据"ssasl.mechanism"配置项的值，也即是创建生产者或消费者时设置的props.put("sasl.mechanism", "PLAIN");
+        String clientSaslMechanism = (String) configs.get(SaslConfigs.SASL_MECHANISM); // ssasl.mechanism
+        // 调用ChannelBuilders的create()方法创建对应的ChannelBuilder对象
         return ChannelBuilders.create(securityProtocol, Mode.CLIENT, LoginType.CLIENT, configs, clientSaslMechanism, true);
     }
 

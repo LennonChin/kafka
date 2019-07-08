@@ -52,8 +52,11 @@ public enum SecurityProtocol {
             if (!proto.isTesting)
                 nonTestingValues.add(proto);
         }
+        // 带有编码的SecurityProtocol协议，字典结构，Map<编码, SecurityProtocol Name>
         CODE_TO_SECURITY_PROTOCOL = Collections.unmodifiableMap(codeToSecurityProtocol);
+        // 所有的SecurityProtocol协议名集合，列表结构，List<String>
         NAMES = Collections.unmodifiableList(names);
+        // 非测试的SecurityProtocol协议集合，集合结构，Set<SecurityProtocol>
         NON_TESTING_VALUES = Collections.unmodifiableSet(nonTestingValues);
     }
 

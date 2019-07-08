@@ -41,11 +41,18 @@ trait NotificationHandler {
  * The caller/user of this class should ensure that they use zkClient.subscribeStateChanges and call processAllNotifications
  * method of this class from ZkStateChangeListener's handleNewSession() method. This is necessary to ensure that if zk session
  * is terminated and reestablished any missed notification will be processed immediately.
+  *
+  * 对于权限控制来说：
+  * 会在ZooKeeper的/kafka-acl-changes节点上注册NodeChangeListener，用来监听其子节点的变化。
+  * 当通过kafka-acks命令增删ACLs信息时，除了修改/kafka-acl路径下的ACLs数据，
+  * 还会在/kafka-acl-changes路径下添加一个持久顺序节点，节点名称的前缀是acl_changes_字符串，该节点中记录的数据是修改的资源类型和资源名称。
+  * 之后NodeChangeListener会被触发，它会根据节点名称重新加载相应资源的ACLs信息到aclCache集合中。
+  *
  * @param zkUtils
- * @param seqNodeRoot
- * @param seqNodePrefix
- * @param notificationHandler
- * @param changeExpirationMs
+ * @param seqNodeRoot 指定监听的路径，对于权限控制来说是/kafka-acl-changes
+ * @param seqNodePrefix 持久顺序节点的前缀，对于权限控制来说是acl_changes_
+ * @param notificationHandler 当监听到seqNodeRoot路径下子节点集合发生变化时，执行的响应操作
+ * @param changeExpirationMs 如果顺序节点创建后，超过该值指定的时间，则认为可以被删除，默认值为15分钟
  * @param time
  */
 class ZkNodeChangeNotificationListener(private val zkUtils: ZkUtils,
@@ -54,6 +61,7 @@ class ZkNodeChangeNotificationListener(private val zkUtils: ZkUtils,
                                        private val notificationHandler: NotificationHandler,
                                        private val changeExpirationMs: Long = 15 * 60 * 1000,
                                        private val time: Time = SystemTime) extends Logging {
+  // 记录上次处理的顺序节点的编号
   private var lastExecutedChange = -1L
   private val isClosed = new AtomicBoolean(false)
 
@@ -61,9 +69,13 @@ class ZkNodeChangeNotificationListener(private val zkUtils: ZkUtils,
    * create seqNodeRoot and begin watching for any new children nodes.
    */
   def init() {
+    // 确保seqNodeRoot所指定的路径存在
     zkUtils.makeSurePersistentPathExists(seqNodeRoot)
+    // 注册NodeChangeListener，监听seqNodeRoot的子节点的变化
     zkUtils.zkClient.subscribeChildChanges(seqNodeRoot, NodeChangeListener)
+    // 注册ZkStateChangeListener，监听与ZooKeeper的连接状态变化
     zkUtils.zkClient.subscribeStateChanges(ZkStateChangeListener)
+    // 处理seqNodeRoot的子节点
     processAllNotifications()
   }
 
@@ -73,6 +85,8 @@ class ZkNodeChangeNotificationListener(private val zkUtils: ZkUtils,
 
   /**
    * Process all changes
+    * 当NodeChangeListener和ZkStateChangeListener被触发时，
+    * 都会调用processAllNotifications()方法处理seqNodeRoot的子节点
    */
   def processAllNotifications() {
     val changes = zkUtils.zkClient.getChildren(seqNodeRoot)
@@ -87,15 +101,22 @@ class ZkNodeChangeNotificationListener(private val zkUtils: ZkUtils,
       info(s"Processing notification(s) to $seqNodeRoot")
       try {
         val now = time.milliseconds
+        // 遍历子节点集合
         for (notification <- notifications) {
+          // 获取子节点编号
           val changeId = changeNumber(notification)
+          // 检测此子节点是否已经处理过
           if (changeId > lastExecutedChange) {
             val changeZnode = seqNodeRoot + "/" + notification
+            // 读取子节点状态和其中记录的数据
             val (data, stat) = zkUtils.readDataMaybeNull(changeZnode)
+            // 调用NotificationHandler的processNotification()方法实现更新
             data map (notificationHandler.processNotification(_)) getOrElse (logger.warn(s"read null data from $changeZnode when processing notification $notification"))
           }
+          // 记录处理的子节点编号
           lastExecutedChange = changeId
         }
+        // 删除过期节点
         purgeObsoleteNotifications(now, notifications)
       } catch {
         case e: ZkInterruptedException =>
@@ -112,11 +133,14 @@ class ZkNodeChangeNotificationListener(private val zkUtils: ZkUtils,
    */
   private def purgeObsoleteNotifications(now: Long, notifications: Seq[String]) {
     for (notification <- notifications.sorted) {
+      // 读取节点状态信息和其中记录的数据
       val notificationNode = seqNodeRoot + "/" + notification
       val (data, stat) = zkUtils.readDataMaybeNull(notificationNode)
       if (data.isDefined) {
+        // 检测节点是否过期
         if (now - stat.getCtime > changeExpirationMs) {
           debug(s"Purging change notification $notificationNode")
+          // 删除节点
           zkUtils.deletePath(notificationNode)
         }
       }

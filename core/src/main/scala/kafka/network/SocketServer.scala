@@ -595,10 +595,10 @@ private[kafka] class Processor(val id: Int,
       try {
         // 获取对应的KafkaChannel
         val channel = selector.channel(receive.source)
-        // 创建KafkaChannel对应的Session对象，用于权限控制
+        // 从KafkaChannel中封装的SaslServerAuthenticator对象中获取authorizationID信息，并封装成Session，用于权限控制
         val session = RequestChannel.Session(new KafkaPrincipal(KafkaPrincipal.USER_TYPE, channel.principal.getName),
           channel.socketAddress)
-        // 封装Request请求对象
+        // 将Session与请求数据封装成RequestChannel.Request对象
         val req = RequestChannel.Request(processor = id, connectionId = receive.source, session = session, buffer = receive.payload, startTimeMs = time.milliseconds, securityProtocol = protocol)
         // 将RequestChannel.Requestd放入RequestChannel.requestQueue队列中等待Handler线程的后续处理
         requestChannel.sendRequest(req)

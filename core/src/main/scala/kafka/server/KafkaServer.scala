@@ -203,14 +203,20 @@ class KafkaServer(val config: KafkaConfig, time: Time = SystemTime, threadNamePr
         groupCoordinator = GroupCoordinator(config, zkUtils, replicaManager, kafkaMetricsTime)
         groupCoordinator.startup()
 
-        /* Get the authorizer and initialize it if one is specified.*/
+        /**
+          * Get the authorizer and initialize it if one is specified.
+          * 创建并配置Authorizer对象，根据server.properties文件中的authorizer.class.name配置项
+          **/
         authorizer = Option(config.authorizerClassName).filter(_.nonEmpty).map { authorizerClassName =>
+          // 通过反射方式初始化authorizer.class.name配置项指定的Authorizer对象
           val authZ = CoreUtils.createObject[Authorizer](authorizerClassName)
+          // 调用Authorizer对象的configure()方法进行配置
           authZ.configure(config.originals())
           authZ
         }
 
         /* start processing requests */
+        // 这里会将Authorizer对象传递给KafkaApis对象
         apis = new KafkaApis(socketServer.requestChannel, replicaManager, groupCoordinator,
           kafkaController, zkUtils, config.brokerId, config, metadataCache, metrics, authorizer)
         requestHandlerPool = new KafkaRequestHandlerPool(config.brokerId, socketServer.requestChannel, apis, config.numIoThreads)
