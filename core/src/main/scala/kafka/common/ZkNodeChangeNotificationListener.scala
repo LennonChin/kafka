@@ -158,6 +158,7 @@ class ZkNodeChangeNotificationListener(private val zkUtils: ZkUtils,
       try {
         import scala.collection.JavaConverters._
         if (notifications != null)
+          // 该方法是ZkNodeChangeNotificationListener的
           processNotifications(notifications.asScala.sorted)
       } catch {
         case e: Exception => error(s"Error processing notification change for path = $path and notification= $notifications :", e)
@@ -168,6 +169,7 @@ class ZkNodeChangeNotificationListener(private val zkUtils: ZkUtils,
   object ZkStateChangeListener extends IZkStateListener {
 
     override def handleNewSession() {
+      // 该方法是ZkNodeChangeNotificationListener的
       processAllNotifications
     }
 

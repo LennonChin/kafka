@@ -371,15 +371,19 @@ class SimpleAclAuthorizer extends Authorizer with Logging {
     aclCache.getOrElse(resource, throw new IllegalArgumentException(s"ACLs do not exist in the cache for resource $resource"))
   }
 
+  // 从Zookeeper中读取ACLs信息，封装为VersionedAcls对象
   private def getAclsFromZk(resource: Resource): VersionedAcls = {
     val (aclJson, stat) = zkUtils.readDataMaybeNull(toResourcePath(resource))
     VersionedAcls(aclJson.map(Acl.fromJson).getOrElse(Set()), stat.getVersion)
   }
 
+  // 更新ACLs信息到aclCache
   private def updateCache(resource: Resource, versionedAcls: VersionedAcls) {
     if (versionedAcls.acls.nonEmpty) {
+      // 只有在Acls不为空时才添加
       aclCache.put(resource, versionedAcls)
     } else {
+      // 否则视为移除
       aclCache.remove(resource)
     }
   }
