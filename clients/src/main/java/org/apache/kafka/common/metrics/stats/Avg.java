@@ -25,6 +25,7 @@ public class Avg extends SampledStat {
         super(0.0);
     }
 
+    // 对每次新的值进行累加
     @Override
     protected void update(Sample sample, MetricConfig config, double value, long now) {
         sample.value += value;
@@ -34,11 +35,14 @@ public class Avg extends SampledStat {
     public double combine(List<Sample> samples, MetricConfig config, long now) {
         double total = 0.0;
         long count = 0;
+        // 将所有Sample的值进行累加，并将所有Sample的事件数进行累加
         for (int i = 0; i < samples.size(); i++) {
             Sample s = samples.get(i);
             total += s.value;
             count += s.eventCount;
         }
+
+        // 计算平均值
         return count == 0 ? 0 : total / count;
     }
 

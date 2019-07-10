@@ -428,7 +428,7 @@ class ReplicaStateMachine(controller: KafkaController) extends Logging {
       info("Broker change listener fired for path %s with children %s".format(parentPath, currentBrokerList.sorted.mkString(",")))
       inLock(controllerContext.controllerLock) {
         if (hasStarted.get) { // 需要在状态机启动的情况下执行
-          ControllerStats.leaderElectionTimer.time { // 计时操作
+          ControllerStats.leaderElectionTimer.time { // 计时操作，用于JMX监控
             try {
               // 获取Zookeeper中的Broker列表、得到BrokerID集合
               val curBrokers = currentBrokerList.map(_.toInt).toSet.flatMap(zkUtils.getBrokerInfo)

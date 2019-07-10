@@ -96,8 +96,11 @@ public class Selector implements Selectable {
     // 记录向哪些Node发送的请求失败了
     private final List<String> failedSends;
     private final Time time;
+    // 封装了使用到的全部Sensor对象
     private final SelectorMetrics sensors;
+    // MetricName中group的前缀，此处为controller-channel
     private final String metricGrpPrefix;
+    // 创建MetricName时使用的tags集合，会成为MBean名称的一部分
     private final Map<String, String> metricTags;
     // 用于创建KafkaChannel的Builder。根据不同配置创建不同的TransportLayer的子类，然后创建KafkaChannel
     private final ChannelBuilder channelBuilder;
@@ -306,13 +309,17 @@ public class Selector implements Selectable {
             timeout = 0;
 
         /* check ready keys */
+        // 记录select()方法的起始时间
         long startSelect = time.nanoseconds();
-        // 调用select()方法
+        // 调用select()方法，等待事件发生
         int readyKeys = select(timeout);
+        // 记录select()方法的结束时间
         long endSelect = time.nanoseconds();
         currentTimeNanos = endSelect;
+        // 调用selectTime的record()方法，记录select()方法的阻塞时间
         this.sensors.selectTime.record(endSelect - startSelect, time.milliseconds());
-        
+
+        // 调用pollSelectionKeys()方法进行I/O操作处理
         if (readyKeys > 0 || !immediatelyConnectedKeys.isEmpty()) {
 			// 处理IO事件
             pollSelectionKeys(this.nioSelector.selectedKeys(), false);
@@ -322,7 +329,9 @@ public class Selector implements Selectable {
         // 将statedReceives复制到completedReceives集合中
         addToCompletedReceives();
 
+        // 记录I/O操作的结束时间
         long endIo = time.nanoseconds();
+        // 调用ioTime的record()方法记录I/O操作的耗时
         this.sensors.ioTime.record(endIo - endSelect, time.milliseconds());
         // 关闭长期空闲的连接
         maybeCloseOldestConnection();
@@ -351,9 +360,10 @@ public class Selector implements Selectable {
 				// connect()方法返回true或OP_CONNECTION事件的处理
 				if (isImmediatelyConnected || key.isConnectable()) {
 					// finishConnect方法会先检测sockChannel是否建立完成，建立后，会取消对OP_CONNECT事件关注，开始关注OP_READ事件
-                    if (channel.finishConnect()) {
+                    if (channel.finishConnect()) { // 检测是否已经成功连接
                     	// 将连接的ID添加到connected集合中
                         this.connected.add(channel.id());
+                        // 调用connectionCreated的record()方法，记录连接创建数
                         this.sensors.connectionCreated.record();
                     } else
                     	// 连接未完成，跳过对该Channel的后续处理
@@ -389,8 +399,10 @@ public class Selector implements Selectable {
 					 * 如果发送成功就会返回send，然后将其添加到completedSends集合，等待后续处理
 					 * 如果发送未完成会返回null
 					 */
-					if (send != null) {
+					if (send != null) { // 成功发送一个完整的请求
+					    // 添加到completedSends集合等待后续处理
                         this.completedSends.add(send);
+                        // 调用bytesSent的record()方法进行记录
                         this.sensors.recordBytesSent(channel.id(), send.size());
                     }
                 }
@@ -532,6 +544,7 @@ public class Selector implements Selectable {
      */
     private void close(KafkaChannel channel) {
         try {
+            // 关闭连接
             channel.close();
         } catch (IOException e) {
             log.error("Exception closing connection to node {}:", channel.id(), e);
@@ -539,6 +552,7 @@ public class Selector implements Selectable {
         this.stagedReceives.remove(channel);
         this.channels.remove(channel.id());
         this.lruConnections.remove(channel.id());
+        // 调用connectionClosed的record()，记录连接关闭数
         this.sensors.connectionClosed.record();
     }
 
@@ -632,6 +646,7 @@ public class Selector implements Selectable {
                     // 获取队首networkReceive并添加到completedReceives
                     NetworkReceive networkReceive = deque.poll();
                     this.completedReceives.add(networkReceive);
+                    // 调用bytesReceived的record()方法进行记录
                     this.sensors.recordBytesReceived(channel.id(), networkReceive.payload().limit());
                     // 如果队列空了，移除键值对
                     if (deque.isEmpty())
@@ -644,73 +659,156 @@ public class Selector implements Selectable {
 
     private class SelectorMetrics {
         private final Metrics metrics;
+        // 监控连接关闭，使用Rate记录每秒连接关闭数
         public final Sensor connectionClosed;
+        // 监控连接创建，使用Rate记录每秒连接创建数
         public final Sensor connectionCreated;
+        // 监控网络操作数，使用Rate记录每秒钟所有连接上执行的读写操作总数
         public final Sensor bytesTransferred;
+        /**
+         * 监控发送请求的相关指标，此Sensor是bytesTransferred的子Sensor。
+         * 其中使用Rate记录Controller每秒钟发送的字节数和请求数，
+         * 使用Avg记录发送请求的平均大小，使用Max记录发送请求的最大长度。
+         */
         public final Sensor bytesSent;
+        /**
+         * 监控接收请求的相关指标，此Sensor是byteTransferred的子Sensor。
+         * 使用Rate记录Controller每秒钟接收的字节数和请求数。
+         */
         public final Sensor bytesReceived;
+        /**
+         * 监控select()方法的相关指标。
+         * 使用Rate记录每秒钟调用select()方法的次数，
+         * 使用Avg记录调用select()方法阻塞的平均值，
+         * 使用Rate记录调用select()方法阻塞时间占总时间的比例。
+         */
         public final Sensor selectTime;
+        /**
+         * 监控I/O耗时的相关指标。
+         * 使用Avg记录I/O操作的平均耗时，使用Rate执行I/O操作占总时间的比例。
+         */
         public final Sensor ioTime;
 
-        /* Names of metrics that are not registered through sensors */
+        /**
+         * Names of metrics that are not registered through sensors
+         * 保存了直接向Metrics注册的Measurable对象，这些Measurable对象没有注册到Sensor中。
+         * */
         private final List<MetricName> topLevelMetricNames = new ArrayList<>();
+        // 保存了上面全部的Sensor对象
         private final List<Sensor> sensors = new ArrayList<>();
 
         public SelectorMetrics(Metrics metrics) {
             this.metrics = metrics;
+            // 此处得到的metricGrpName的值为controller-channel-metrics，下面所有Sensor都是用此值作为group部分
             String metricGrpName = metricGrpPrefix + "-metrics";
             StringBuilder tagsSuffix = new StringBuilder();
 
+            /**
+             * 将tags集合组装成字符串，假设连接的BrokerId为1，此值为broker-1，
+             * 下面所有Sensor都会将此值作为其name的一部分
+             */
             for (Map.Entry<String, String> tag: metricTags.entrySet()) {
                 tagsSuffix.append(tag.getKey());
                 tagsSuffix.append("-");
                 tagsSuffix.append(tag.getValue());
             }
 
+            // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+            // 创建Sensor对象
             this.connectionClosed = sensor("connections-closed:" + tagsSuffix.toString());
+            // 创建MetricName
             MetricName metricName = metrics.metricName("connection-close-rate", metricGrpName, "Connections closed per second in the window.", metricTags);
+            // 记录每秒连接的关闭数
             this.connectionClosed.add(metricName, new Rate());
 
+            // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+            // 创建Sensor对象
             this.connectionCreated = sensor("connections-created:" + tagsSuffix.toString());
+
+            // 记录每秒连接的创建数
             metricName = metrics.metricName("connection-creation-rate", metricGrpName, "New connections established per second in the window.", metricTags);
             this.connectionCreated.add(metricName, new Rate());
 
+            // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+            // 创建Sensor对象
             this.bytesTransferred = sensor("bytes-sent-received:" + tagsSuffix.toString());
+
+            // 记录所有连接每秒执行的读写总数
             metricName = metrics.metricName("network-io-rate", metricGrpName, "The average number of network operations (reads or writes) on all connections per second.", metricTags);
             bytesTransferred.add(metricName, new Rate(new Count()));
 
+            // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+            // 创建Sensor对象，这里会将bytesTransferred作为付Sensor
             this.bytesSent = sensor("bytes-sent:" + tagsSuffix.toString(), bytesTransferred);
+
+            // 记录所有连接每秒发送的总字节数
             metricName = metrics.metricName("outgoing-byte-rate", metricGrpName, "The average number of outgoing bytes sent per second to all servers.", metricTags);
             this.bytesSent.add(metricName, new Rate());
+
+            // 记录平均每秒发送的总请求数
             metricName = metrics.metricName("request-rate", metricGrpName, "The average number of requests sent per second.", metricTags);
             this.bytesSent.add(metricName, new Rate(new Count()));
+
+            // 记录请求的平均大小
             metricName = metrics.metricName("request-size-avg", metricGrpName, "The average size of all requests in the window..", metricTags);
             this.bytesSent.add(metricName, new Avg());
+
+            // 记录请求的最大长度
             metricName = metrics.metricName("request-size-max", metricGrpName, "The maximum size of any request sent in the window.", metricTags);
             this.bytesSent.add(metricName, new Max());
 
+            // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+            // 创建Sensor对象，这里会将bytesTransferred作为付Sensor
             this.bytesReceived = sensor("bytes-received:" + tagsSuffix.toString(), bytesTransferred);
+
+            // 记录每秒收到的字节数
             metricName = metrics.metricName("incoming-byte-rate", metricGrpName, "Bytes/second read off all sockets", metricTags);
             this.bytesReceived.add(metricName, new Rate());
+
+            // 记录每秒收到的请求数
             metricName = metrics.metricName("response-rate", metricGrpName, "Responses received sent per second.", metricTags);
             this.bytesReceived.add(metricName, new Rate(new Count()));
 
+            // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+            // 创建Sensor对象
             this.selectTime = sensor("select-time:" + tagsSuffix.toString());
+
+            // 记录每秒调用select()方法次数
             metricName = metrics.metricName("select-rate", metricGrpName, "Number of times the I/O layer checked for new I/O to perform per second", metricTags);
             this.selectTime.add(metricName, new Rate(new Count()));
+
+            // 记录select()方法的平均阻塞时间
             metricName = metrics.metricName("io-wait-time-ns-avg", metricGrpName, "The average length of time the I/O thread spent waiting for a socket ready for reads or writes in nanoseconds.", metricTags);
             this.selectTime.add(metricName, new Avg());
+
+            // 记录调用select()方法阻塞时间占总时间的比例
             metricName = metrics.metricName("io-wait-ratio", metricGrpName, "The fraction of time the I/O thread spent waiting.", metricTags);
             this.selectTime.add(metricName, new Rate(TimeUnit.NANOSECONDS));
 
+            // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+            // 创建Sensor对象
             this.ioTime = sensor("io-time:" + tagsSuffix.toString());
+
+            // 记录I/O的平均时长
             metricName = metrics.metricName("io-time-ns-avg", metricGrpName, "The average length of time for I/O per select call in nanoseconds.", metricTags);
             this.ioTime.add(metricName, new Avg());
+
+            // 记录执行I/O时间占总时间的比例
             metricName = metrics.metricName("io-ratio", metricGrpName, "The fraction of time the I/O thread spent doing I/O", metricTags);
             this.ioTime.add(metricName, new Rate(TimeUnit.NANOSECONDS));
 
+            // 记录连接数
             metricName = metrics.metricName("connection-count", metricGrpName, "The current number of active connections.", metricTags);
             topLevelMetricNames.add(metricName);
+
+            // 直接向Metrics添加匿名的Measurale，用来记录连接数
             this.metrics.addMetric(metricName, new Measurable() {
                 public double measure(MetricConfig config, long now) {
                     return channels.size();

@@ -60,9 +60,13 @@ import org.apache.kafka.common.utils.Utils;
  */
 public final class MetricName {
 
+    // KafkaMetric的名称
     private final String name;
+    // 记录所属的逻辑组的名称
     private final String group;
+    // 对KafkaMetric的描述信息
     private final String description;
+    // 记录额外的键值对信息
     private Map<String, String> tags;
     private int hash = 0;
 

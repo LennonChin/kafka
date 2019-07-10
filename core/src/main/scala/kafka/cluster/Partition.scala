@@ -367,6 +367,8 @@ class Partition(val topic: String,
             // update ISR in ZK and cache
             // 更新缓存及Zookeeper中的In-Sync集合数据
             updateIsr(newInSyncReplicas)
+
+            // 这里会使用Meter度量对象标识一次ISR集合的扩张
             replicaManager.isrExpandRate.mark()
           }
 
@@ -511,6 +513,7 @@ class Partition(val topic: String,
             updateIsr(newInSyncReplicas)
             // we may need to increment high watermark since ISR could be down to 1
 
+            // 这里会使用Meter度量对象标识一次ISR集合的缩减
             replicaManager.isrShrinkRate.mark()
             // 因为更新了ISR，尝试更新Leader的HighWatermark
             maybeIncrementLeaderHW(leaderReplica)

@@ -57,12 +57,18 @@ import org.slf4j.LoggerFactory;
  */
 public class Metrics implements Closeable {
 
+    // 默认的配置信息
     private final MetricConfig config;
+    // 保存了添加到Metrics中的KafkaMetric对象
     private final ConcurrentMap<MetricName, KafkaMetric> metrics;
+    // 保存了添加到Metrics中的Sensor对象
     private final ConcurrentMap<String, Sensor> sensors;
+    // 记录了每个Sensor的子Sensor集合
     private final ConcurrentMap<Sensor, List<Sensor>> childrenSensors;
+    // 保存了使用的MetricsReporter对象，默认是JmxReporter
     private final List<MetricsReporter> reporters;
     private final Time time;
+    // 用于执行ExpireSensorTask定时任务的线程池
     private final ScheduledThreadPoolExecutor metricsScheduler;
     private static final Logger log = LoggerFactory.getLogger(Metrics.class);
 
@@ -129,6 +135,7 @@ public class Metrics implements Closeable {
             reporter.init(new ArrayList<KafkaMetric>());
 
         // Create the ThreadPoolExecutor only if expiration of Sensors is enabled.
+        // 创建ScheduledThreadPoolExecutor线程池
         if (enableExpiration) {
             this.metricsScheduler = new ScheduledThreadPoolExecutor(1);
             // Creating a daemon thread to not block shutdown
@@ -137,12 +144,14 @@ public class Metrics implements Closeable {
                     return Utils.newThread("SensorExpiryThread", runnable, true);
                 }
             });
+            // 启动定时任务
             this.metricsScheduler.scheduleAtFixedRate(new ExpireSensorTask(), 30, 30, TimeUnit.SECONDS);
         } else {
             this.metricsScheduler = null;
         }
 
         addMetric(metricName("count", "kafka-metrics-count", "total number of registered metrics"),
+            // 创建一个记录metrics集合大小的Measurable对象并注册到Metrics中
             new Measurable() {
                 @Override
                 public double measure(MetricConfig config, long now) {
@@ -271,6 +280,9 @@ public class Metrics implements Closeable {
     /**
      * Get or create a sensor with the given unique name and zero or more parent sensors. All parent sensors will
      * receive every value recorded with this sensor.
+     *
+     * 主要负责从sensors集合中获取Sensor对象，如果指定的Sensor不存在则创建新Sensor对象，并使用childrenSensors集合记录Sensor的层级关系
+     *
      * @param name The name of the sensor
      * @param config A default configuration to use for this sensor for metrics that don't have their own config
      * @param inactiveSensorExpirationTimeSeconds If no value if recorded on the Sensor for this duration of time,
@@ -279,11 +291,15 @@ public class Metrics implements Closeable {
      * @return The sensor that is created
      */
     public synchronized Sensor sensor(String name, MetricConfig config, long inactiveSensorExpirationTimeSeconds, Sensor... parents) {
+        // 根据name从sensors集合中获取Sensor对象
         Sensor s = getSensor(name);
         if (s == null) {
+            // 创建Sensor对象
             s = new Sensor(this, name, parents, config == null ? this.config : config, time, inactiveSensorExpirationTimeSeconds);
+            // 将新创建的Sensor对象保存到sensors集合中
             this.sensors.put(name, s);
             if (parents != null) {
+                // 通过childrenSensors记录Sensor的层次关系
                 for (Sensor parent : parents) {
                     List<Sensor> children = childrenSensors.get(parent);
                     if (children == null) {
@@ -378,8 +394,10 @@ public class Metrics implements Closeable {
         MetricName metricName = metric.metricName();
         if (this.metrics.containsKey(metricName))
             throw new IllegalArgumentException("A metric named '" + metricName + "' already exists, can't register another one.");
+        // 向metrics中添加KafkaMetric对象
         this.metrics.put(metricName, metric);
         for (MetricsReporter reporter : reporters)
+            // 向每个MetricsReporter注册KafkaMetric对象
             reporter.metricChange(metric);
     }
 
@@ -396,6 +414,7 @@ public class Metrics implements Closeable {
      */
     class ExpireSensorTask implements Runnable {
         public void run() {
+            // 遍历sensors集合
             for (Map.Entry<String, Sensor> sensorEntry : sensors.entrySet()) {
                 // removeSensor also locks the sensor object. This is fine because synchronized is reentrant
                 // There is however a minor race condition here. Assume we have a parent sensor P and child sensor C.
@@ -405,8 +424,9 @@ public class Metrics implements Closeable {
                 // Since the expiration time is typically high it is not expected to be a significant concern
                 // and thus not necessary to optimize
                 synchronized (sensorEntry.getValue()) {
-                    if (sensorEntry.getValue().hasExpired()) {
+                    if (sensorEntry.getValue().hasExpired()) { // 检查Sensor是否过期
                         log.debug("Removing expired sensor {}", sensorEntry.getKey());
+                        // 移除过期的Sensor对象
                         removeSensor(sensorEntry.getKey());
                     }
                 }

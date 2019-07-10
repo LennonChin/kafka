@@ -18,6 +18,8 @@ import org.apache.kafka.common.metrics.MetricConfig;
 
 /**
  * A {@link SampledStat} that gives the max over its samples.
+ *
+ * 记录最大值
  */
 public final class Max extends SampledStat {
 
@@ -25,6 +27,7 @@ public final class Max extends SampledStat {
         super(Double.NEGATIVE_INFINITY);
     }
 
+    // 每个比较新的值和旧的值的大小，记录最大的那个
     @Override
     protected void update(Sample sample, MetricConfig config, double value, long now) {
         sample.value = Math.max(sample.value, value);
@@ -33,6 +36,7 @@ public final class Max extends SampledStat {
     @Override
     public double combine(List<Sample> samples, MetricConfig config, long now) {
         double max = Double.NEGATIVE_INFINITY;
+        // 得到所有Sample中的最大值
         for (int i = 0; i < samples.size(); i++)
             max = Math.max(max, samples.get(i).value);
         return max;

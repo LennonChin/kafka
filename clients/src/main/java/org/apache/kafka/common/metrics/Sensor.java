@@ -32,13 +32,27 @@ import org.apache.kafka.common.utils.Utils;
 public final class Sensor {
 
     private final Metrics registry;
+    // 当前Sensor对象的名称，Metrics通过该名称区别不同的Sensor对象
     private final String name;
+    // Sensor是可以分为多层的，该字段指定了当前Sensor对象的父Sensor
     private final Sensor[] parents;
+    // 保存构成Sensor的度量对象
     private final List<Stat> stats;
+    /**
+     * 保存构成Sensor的KafkaMetric对象，
+     * 当度量对象添加进Sensor时会创建对应的KafkaMetric对象（CompoundStat会创建多个），
+     * 并保存到此集合中
+     */
     private final List<KafkaMetric> metrics;
+    // 默认的配置信息
     private final MetricConfig config;
     private final Time time;
+    // 最后一次执行record()方法的时间戳
     private volatile long lastRecordTime;
+    /**
+     * 长时间未使用Sensor会被认为是过期Sensor，
+     * 由ExpireSensorTask线程负责进行清理，此字段记录成为过期Sensor”的阈值
+     */
     private final long inactiveSensorExpirationTimeMs;
 
     Sensor(Metrics registry, String name, Sensor[] parents, MetricConfig config, Time time, long inactiveSensorExpirationTimeSeconds) {
@@ -99,11 +113,14 @@ public final class Sensor {
         this.lastRecordTime = timeMs;
         synchronized (this) {
             // increment all the stats
+            // 调用stats集合中每个stat对象的record()方法
             for (int i = 0; i < this.stats.size(); i++)
                 this.stats.get(i).record(config, value, timeMs);
+            // 检测是否超出了MetricConfig指定的上下西限
             checkQuotas(timeMs);
         }
         for (int i = 0; i < parents.length; i++)
+            // 调用每个父Sensor的record()方法
             parents[i].record(value, timeMs);
     }
 
@@ -114,11 +131,15 @@ public final class Sensor {
     private void checkQuotas(long timeMs) {
         for (int i = 0; i < this.metrics.size(); i++) {
             KafkaMetric metric = this.metrics.get(i);
+            // 获取MetricConfig对象
             MetricConfig config = metric.config();
             if (config != null) {
+                // 获取MetricsConfig对象中的Quota对象
                 Quota quota = config.quota();
                 if (quota != null) {
+                    // 计算最终的度量值
                     double value = metric.value(timeMs);
+                    // 检测度量值是否超出上下限
                     if (!quota.acceptable(value)) {
                         throw new QuotaViolationException(String.format(
                             "'%s' violated quota. Actual: %f, Threshold: %f",
@@ -146,9 +167,13 @@ public final class Sensor {
      */
     public synchronized void add(CompoundStat stat, MetricConfig config) {
         this.stats.add(Utils.notNull(stat));
+        // 遍历CompoundStat中每个子Stat对象
         for (NamedMeasurable m : stat.stats()) {
+            // 创建KafkaMetric对象
             KafkaMetric metric = new KafkaMetric(this, m.name(), m.stat(), config == null ? this.config : config, time);
+            // 将KafkaMetric保存到Metrics中，创建并注册对应的MBean
             this.registry.registerMetric(metric);
+            // 添加到metrics集合
             this.metrics.add(metric);
         }
     }
@@ -164,18 +189,24 @@ public final class Sensor {
 
     /**
      * Register a metric with this sensor
+     * 向Sensor中添加Stat
+     *
      * @param metricName The name of the metric
      * @param stat The statistic to keep
      * @param config A special configuration for this metric. If null use the sensor default configuration.
      */
     public synchronized void add(MetricName metricName, MeasurableStat stat, MetricConfig config) {
+        // 创建KafkaMetric对象
         KafkaMetric metric = new KafkaMetric(new Object(),
                                              Utils.notNull(metricName),
                                              Utils.notNull(stat),
                                              config == null ? this.config : config,
                                              time);
+        // 将KafkaMetric保存到Metrics中，创建并注册对应的MBean
         this.registry.registerMetric(metric);
+        // 添加到metrics集合
         this.metrics.add(metric);
+        // 添加到stats集合
         this.stats.add(stat);
     }
 

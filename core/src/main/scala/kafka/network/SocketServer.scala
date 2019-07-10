@@ -621,6 +621,7 @@ private[kafka] class Processor(val id: Int,
         // 如果没取到就抛出异常
         throw new IllegalStateException(s"Send for ${send.destination} completed, but not in `inflightResponses`")
       }
+      // 调用Request的updateRequestMetrics()更新度量值
       resp.request.updateRequestMetrics()
       // 注册OP_READ事件，允许连接继续读取数据
       selector.unmute(send.destination)

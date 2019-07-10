@@ -14,11 +14,14 @@ package org.apache.kafka.common.metrics;
 
 /**
  * A measurable quantity that can be registered as a metric
+ * 度量类型最基础的接口
  */
 public interface Measurable {
 
     /**
      * Measure this quantity and return the result as a double
+     * 用于获取被监控的值
+     *
      * @param config The configuration for this metric
      * @param now The POSIX time in milliseconds the measurement is being taken
      * @return The measured value

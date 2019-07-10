@@ -114,6 +114,7 @@ class ControllerChannelManager(controllerContext: ControllerContext, config: Kaf
     val brokerNode = new Node(broker.id, brokerEndPoint.host, brokerEndPoint.port)
     // 构建网络通信组件
     val networkClient = {
+      // 创建ChannelBuilder对象
       val channelBuilder = ChannelBuilders.create(
         config.interBrokerSecurityProtocol,
         Mode.CLIENT,
@@ -122,16 +123,19 @@ class ControllerChannelManager(controllerContext: ControllerContext, config: Kaf
         config.saslMechanismInterBrokerProtocol,
         config.saslInterBrokerHandshakeRequestEnable
       )
+      // 创建Selector对象
       val selector = new Selector(
         NetworkReceive.UNLIMITED,
         config.connectionsMaxIdleMs,
-        metrics,
+        metrics, // Metrics对象，由KafkaServer启动时创建
         time,
         "controller-channel",
         Map("broker-id" -> broker.id.toString).asJava,
         false,
         channelBuilder
       )
+
+      // 创建NetworkClient对象
       new NetworkClient(
         selector,
         new ManualMetadataUpdater(Seq(brokerNode).asJava),

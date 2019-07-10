@@ -46,6 +46,7 @@ public final class KafkaMetric implements Metric {
         return this.metricName;
     }
 
+    // 同于获取Measurable中的度量值
     @Override
     public double value() {
         synchronized (this.lock) {

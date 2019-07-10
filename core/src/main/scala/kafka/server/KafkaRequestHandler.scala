@@ -58,6 +58,7 @@ class KafkaRequestHandler(id: Int,
             id, brokerId))
           return
         }
+        // 更新requestDequeueTimeMs
         req.requestDequeueTimeMs = SystemTime.milliseconds
         trace("Kafka request handler %d on broker %d handling request %s".format(id, brokerId, req))
         // 使用KafkaApis处理RequestChannel.Request

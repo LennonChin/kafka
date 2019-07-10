@@ -125,10 +125,13 @@ class Log(val dir: File,
 
   info("Completed load of log %s with log end offset %d".format(name, logEndOffset))
 
+  // 用于添加Metrics的tags
   val tags = Map("topic" -> topicAndPartition.topic, "partition" -> topicAndPartition.partition.toString)
 
+  // 注册Gauge度量对象
   newGauge("NumLogSegments",
     new Gauge[Int] {
+      // 记录当前Log中的Segment对象个数
       def value = numberOfSegments
     },
     tags)

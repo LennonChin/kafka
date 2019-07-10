@@ -18,6 +18,7 @@ import org.apache.kafka.common.metrics.MetricConfig;
 
 /**
  * A {@link SampledStat} that maintains a simple count of what it has seen.
+ * Count与Total的不同之处在于，随着时间窗口的推移，Count中会有Sample过期，所以Count记录的是一段时间内的总数，而Total的值则单调递增。
  */
 public class Count extends SampledStat {
 
@@ -25,11 +26,13 @@ public class Count extends SampledStat {
         super(0);
     }
 
+    // 在该方法中完成Sample的value累加
     @Override
     protected void update(Sample sample, MetricConfig config, double value, long now) {
         sample.value += 1.0;
     }
 
+    // 在该方法中将所有未过期的Sample的value进行求和并返回
     @Override
     public double combine(List<Sample> samples, MetricConfig config, long now) {
         double total = 0.0;

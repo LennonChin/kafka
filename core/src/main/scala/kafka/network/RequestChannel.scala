@@ -133,10 +133,12 @@ object RequestChannel extends Logging {
       if (apiRemoteCompleteTimeMs < 0)
         apiRemoteCompleteTimeMs = responseCompleteTimeMs
 
+      // 计算Request在RequestChannel中等待的时间
       val requestQueueTime = math.max(requestDequeueTimeMs - startTimeMs, 0)
       val apiLocalTime = math.max(apiLocalCompleteTimeMs - requestDequeueTimeMs, 0)
       val apiRemoteTime = math.max(apiRemoteCompleteTimeMs - apiLocalCompleteTimeMs, 0)
       val apiThrottleTime = math.max(responseCompleteTimeMs - apiRemoteCompleteTimeMs, 0)
+      // 计算Resource在RequestChannel中等待的时间
       val responseQueueTime = math.max(responseDequeueTimeMs - responseCompleteTimeMs, 0)
       val responseSendTime = math.max(endTimeMs - responseDequeueTimeMs, 0)
       val totalTime = endTimeMs - startTimeMs
@@ -153,10 +155,12 @@ object RequestChannel extends Logging {
       metricNames.foreach { metricName =>
         val m = RequestMetrics.metricsMap(metricName)
         m.requestRate.mark()
+        // 更新requestQueueTimeHist
         m.requestQueueTimeHist.update(requestQueueTime)
         m.localTimeHist.update(apiLocalTime)
         m.remoteTimeHist.update(apiRemoteTime)
         m.throttleTimeHist.update(apiThrottleTime)
+        // 更新responseQueueTimeHist
         m.responseQueueTimeHist.update(responseQueueTime)
         m.responseSendTimeHist.update(responseSendTime)
         m.totalTimeHist.update(totalTime)
@@ -179,6 +183,7 @@ object RequestChannel extends Logging {
     * @param responseAction 有SendAction、NoOpAction、CloseConnectionAction三种类型
     */
   case class Response(processor: Int, request: Request, responseSend: Send, responseAction: ResponseAction) {
+    // 更新对应的responseCompleteTimeMs
     request.responseCompleteTimeMs = SystemTime.milliseconds
 
     def this(processor: Int, request: Request, responseSend: Send) =
@@ -302,25 +307,34 @@ object RequestMetrics {
   val metricsMap = new scala.collection.mutable.HashMap[String, RequestMetrics]
   val consumerFetchMetricName = ApiKeys.FETCH.name + "Consumer"
   val followFetchMetricName = ApiKeys.FETCH.name + "Follower"
+
+  // 为每种类型的请求创建对应的RequestMetrics对象
   (ApiKeys.values().toList.map(e => e.name)
     ++ List(consumerFetchMetricName, followFetchMetricName)).foreach(name => metricsMap.put(name, new RequestMetrics(name)))
 }
 
 class RequestMetrics(name: String) extends KafkaMetricsGroup {
   val tags = Map("request" -> name)
+  // 统计每秒请求数
   val requestRate = newMeter("RequestsPerSec", "requests", TimeUnit.SECONDS, tags)
   // time a request spent in a request queue
+  // 统计Request在RequestChannel中的等待时间
   val requestQueueTimeHist = newHistogram("RequestQueueTimeMs", biased = true, tags)
   // time a request takes to be processed at the local broker
+  // 统计Request在当前Broker中处理的用时
   val localTimeHist = newHistogram("LocalTimeMs", biased = true, tags)
   // time a request takes to wait on remote brokers (currently only relevant to fetch and produce requests)
+  // 统计此Broker发送的Request在远端Broker中处理的用时，例如FetchRequest
   val remoteTimeHist = newHistogram("RemoteTimeMs", biased = true, tags)
   // time a request is throttled (only relevant to fetch and produce requests)
   val throttleTimeHist = newHistogram("ThrottleTimeMs", biased = true, tags)
   // time a response spent in a response queue
+  // 统计Response在RequestChannel中的等待时间
   val responseQueueTimeHist = newHistogram("ResponseQueueTimeMs", biased = true, tags)
   // time to send the response to the requester
+  // 统计发送Response的用时
   val responseSendTimeHist = newHistogram("ResponseSendTimeMs", biased = true, tags)
+  // 统计总耗时
   val totalTimeHist = newHistogram("TotalTimeMs", biased = true, tags)
 }
 

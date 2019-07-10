@@ -34,37 +34,51 @@ trait KafkaMetricsGroup extends Logging {
   /**
    * Creates a new MetricName object for gauges, meters, etc. created for this
    * metrics group.
+    *
+    * 按照一定规则生产度量对象的MetricName
+    *
    * @param name Descriptive name of the metric.
    * @param tags Additional attributes which mBean will have.
    * @return Sanitized metric name object.
    */
   private def metricName(name: String, tags: scala.collection.Map[String, String] = Map.empty) = {
+    // 当前类的对象
     val klass = this.getClass
+    // 包名
     val pkg = if (klass.getPackage == null) "" else klass.getPackage.getName
+    // 简单类名
     val simpleName = klass.getSimpleName.replaceAll("\\$$", "")
 
+    // 创建MetricsName
     explicitMetricName(pkg, simpleName, name, tags)
   }
 
 
   private def explicitMetricName(group: String, typeName: String, name: String, tags: scala.collection.Map[String, String] = Map.empty) = {
+
+    // 用于创建MBean的名称
     val nameBuilder: StringBuilder = new StringBuilder
 
+    // 包名
     nameBuilder.append(group)
-
+    // 类名
     nameBuilder.append(":type=")
 
     nameBuilder.append(typeName)
 
+    // Metrics名称
     if (name.length > 0) {
       nameBuilder.append(",name=")
       nameBuilder.append(name)
     }
 
     val scope: String = KafkaMetricsGroup.toScope(tags).getOrElse(null)
+
+    // 遍历tags集合，以逗号分割每个Entry，拼接字符串
     val tagsName = KafkaMetricsGroup.toMBeanName(tags)
     tagsName match {
       case Some(tn) =>
+        // 第四部分是tags
         nameBuilder.append(",").append(tn)
       case None =>
     }
@@ -72,6 +86,7 @@ trait KafkaMetricsGroup extends Logging {
     new MetricName(group, typeName, name, scope, nameBuilder.toString())
   }
 
+  // 用于注册五种Metric度量的方法，基于Yammer的Metrics类
   def newGauge[T](name: String, metric: Gauge[T], tags: scala.collection.Map[String, String] = Map.empty) =
     Metrics.defaultRegistry().newGauge(metricName(name, tags), metric)
 

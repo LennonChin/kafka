@@ -25,6 +25,7 @@ public class Min extends SampledStat {
         super(Double.MIN_VALUE);
     }
 
+    // 每个比较新的值和旧的值的大小，记录最小的那个
     @Override
     protected void update(Sample sample, MetricConfig config, double value, long now) {
         sample.value = Math.min(sample.value, value);
@@ -33,6 +34,7 @@ public class Min extends SampledStat {
     @Override
     public double combine(List<Sample> samples, MetricConfig config, long now) {
         double max = Double.MAX_VALUE;
+        // 得到所有Sample中的最小值
         for (int i = 0; i < samples.size(); i++)
             max = Math.min(max, samples.get(i).value);
         return max;

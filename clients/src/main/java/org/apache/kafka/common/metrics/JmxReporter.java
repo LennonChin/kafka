@@ -38,12 +38,15 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Register metrics in JMX as dynamic mbeans based on the metric names
+ * Kafka提供的MetricsReporter接口默认实现类，
+ * 它通过JMX的方式将KafkaMetric中的信息暴露出来
  */
 public class JmxReporter implements MetricsReporter {
 
     private static final Logger log = LoggerFactory.getLogger(JmxReporter.class);
     private static final Object LOCK = new Object();
     private String prefix;
+    // 记录MBean的名称和对应的KafkaMBean对象
     private final Map<String, KafkaMbean> mbeans = new HashMap<String, KafkaMbean>();
 
     public JmxReporter() {
@@ -70,10 +73,13 @@ public class JmxReporter implements MetricsReporter {
         }
     }
 
+    // 将KafkaMetric以属性的形式添加到KafkaMBean中，并重新注册KafkaMBean
     @Override
     public void metricChange(KafkaMetric metric) {
         synchronized (LOCK) {
+            // 添加KafkaMetric
             KafkaMbean mbean = addAttribute(metric);
+            // 重新注册KafkaMBean
             reregister(mbean);
         }
     }
@@ -103,10 +109,13 @@ public class JmxReporter implements MetricsReporter {
     private KafkaMbean addAttribute(KafkaMetric metric) {
         try {
             MetricName metricName = metric.metricName();
+            // 获取KafkaMBean的名称
             String mBeanName = getMBeanName(metricName);
+            // 如果没有该名称的KafkaMBean则创建
             if (!this.mbeans.containsKey(mBeanName))
                 mbeans.put(mBeanName, new KafkaMbean(mBeanName));
             KafkaMbean mbean = this.mbeans.get(mBeanName);
+            // 以属性的形式添加KafkaMetric
             mbean.setAttribute(metricName.name(), metric);
             return mbean;
         } catch (JMException e) {
@@ -120,9 +129,10 @@ public class JmxReporter implements MetricsReporter {
      */
     private String getMBeanName(MetricName metricName) {
         StringBuilder mBeanName = new StringBuilder();
-        mBeanName.append(prefix);
-        mBeanName.append(":type=");
+        mBeanName.append(prefix); // 第一部分是前缀，服务端默认是kafka.server
+        mBeanName.append(":type="); // 第二部分是MetricName中group字段
         mBeanName.append(metricName.group());
+        // 第三部分由MetricName中的tags集合构成
         for (Map.Entry<String, String> entry : metricName.tags().entrySet()) {
             if (entry.getKey().length() <= 0 || entry.getValue().length() <= 0)
                 continue;
@@ -152,8 +162,10 @@ public class JmxReporter implements MetricsReporter {
     }
 
     private void reregister(KafkaMbean mbean) {
+        // 先取消KafkaMBean的注册
         unregister(mbean);
         try {
+            // 调用MBeanServer的registerMBean()方法重新注册KafkaMBean
             ManagementFactory.getPlatformMBeanServer().registerMBean(mbean, mbean.name());
         } catch (JMException e) {
             throw new KafkaException("Error registering mbean " + mbean.name(), e);
@@ -161,10 +173,13 @@ public class JmxReporter implements MetricsReporter {
     }
 
     private static class KafkaMbean implements DynamicMBean {
+        // MBean的名称
         private final ObjectName objectName;
+        // 记录了添加的KafkaMetric对象，这些KafkaMetric对象会被当作KafkaMbean对象的属性处理
         private final Map<String, KafkaMetric> metrics;
 
         public KafkaMbean(String mbeanName) throws MalformedObjectNameException {
+            // 初始化metrics和objectName
             this.metrics = new HashMap<String, KafkaMetric>();
             this.objectName = new ObjectName(mbeanName);
         }
@@ -174,12 +189,14 @@ public class JmxReporter implements MetricsReporter {
         }
 
         public void setAttribute(String name, KafkaMetric metric) {
+            // 记录KafkaMetric对象
             this.metrics.put(name, metric);
         }
 
         @Override
         public Object getAttribute(String name) throws AttributeNotFoundException, MBeanException, ReflectionException {
             if (this.metrics.containsKey(name))
+                // 返回指定KafkaMetric中的度量值
                 return this.metrics.get(name).value();
             else
                 throw new AttributeNotFoundException("Could not find attribute " + name);
@@ -189,7 +206,9 @@ public class JmxReporter implements MetricsReporter {
         public AttributeList getAttributes(String[] names) {
             try {
                 AttributeList list = new AttributeList();
+                // 循环遍历names并调用getAttribute()方法
                 for (String name : names)
+                    // 获取指定KafkaMetric中的度量值包装为Attribute对象并放入AttributeList
                     list.add(new Attribute(name, getAttribute(name)));
                 return list;
             } catch (Exception e) {

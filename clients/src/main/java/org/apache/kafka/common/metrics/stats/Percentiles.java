@@ -69,6 +69,7 @@ public class Percentiles extends SampledStat implements CompoundStat {
     }
 
     public double value(MetricConfig config, long now, double quantile) {
+        // 清理过期的Sample
         purgeObsoleteSamples(config, now);
         float count = 0.0f;
         for (Sample sample : this.samples)
@@ -100,6 +101,7 @@ public class Percentiles extends SampledStat implements CompoundStat {
 
     @Override
     protected void update(Sample sample, MetricConfig config, double value, long timeMs) {
+        // 强转为HistogramSample并使用其内部的Histogram进行记录
         HistogramSample hist = (HistogramSample) sample;
         hist.histogram.record(value);
     }

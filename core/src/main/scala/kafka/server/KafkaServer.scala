@@ -95,18 +95,27 @@ class KafkaServer(val config: KafkaConfig, time: Time = SystemTime, threadNamePr
 
   private var shutdownLatch = new CountDownLatch(1)
 
+  // 用于构成MBean名称的一部分
   private val jmxPrefix: String = "kafka.server"
+
+  // 读取配置的MetricReporter类型，metric.reporters，默认为空
   private val reporters: java.util.List[MetricsReporter] = config.metricReporterClasses
+  // 默认会创建并添加JmxReporter对象
   reporters.add(new JmxReporter(jmxPrefix))
 
   // This exists because the Metrics package from clients has its own Time implementation.
   // SocketServer/Quotas (which uses client libraries) have to use the client Time objects without having to convert all of Kafka to use them
   // Eventually, we want to merge the Time objects in core and clients
   private implicit val kafkaMetricsTime: org.apache.kafka.common.utils.Time = new org.apache.kafka.common.utils.SystemTime()
+
+  // Metrics监控
   var metrics: Metrics = null
 
+  // 创建MetricConfig对象
   private val metricConfig: MetricConfig = new MetricConfig()
+    // 设置Sample个数，默认为2，metrics.num.samples
     .samples(config.metricNumSamples)
+    // 设置Sample的时间，默认为30000，即300秒，metrics.sample.window.ms
     .timeWindow(config.metricSampleWindowMs, TimeUnit.MILLISECONDS)
 
   val brokerState: BrokerState = new BrokerState
@@ -114,6 +123,8 @@ class KafkaServer(val config: KafkaConfig, time: Time = SystemTime, threadNamePr
   var apis: KafkaApis = null
   var authorizer: Option[Authorizer] = None
   var socketServer: SocketServer = null
+
+  // Handler池
   var requestHandlerPool: KafkaRequestHandlerPool = null
 
   var logManager: LogManager = null
@@ -169,6 +180,8 @@ class KafkaServer(val config: KafkaConfig, time: Time = SystemTime, threadNamePr
 
       val canStartup = isStartingUp.compareAndSet(false, true)
       if (canStartup) {
+
+        // 创建Metrics对象，第四个参数标识开启ExpireSensorTask任务
         metrics = new Metrics(metricConfig, reporters, kafkaMetricsTime, true)
 
         brokerState.newState(Starting)
@@ -219,6 +232,8 @@ class KafkaServer(val config: KafkaConfig, time: Time = SystemTime, threadNamePr
         // 这里会将Authorizer对象传递给KafkaApis对象
         apis = new KafkaApis(socketServer.requestChannel, replicaManager, groupCoordinator,
           kafkaController, zkUtils, config.brokerId, config, metadataCache, metrics, authorizer)
+
+        // 创建KafkaRequestHandlerPool，即Handler处理池
         requestHandlerPool = new KafkaRequestHandlerPool(config.brokerId, socketServer.requestChannel, apis, config.numIoThreads)
         brokerState.newState(RunningAsBroker)
 
@@ -252,7 +267,9 @@ class KafkaServer(val config: KafkaConfig, time: Time = SystemTime, threadNamePr
         // Now that the broker id is successfully registered via KafkaHealthcheck, checkpoint it
         checkpointBrokerId(config.brokerId)
 
-        /* register broker metrics */
+        /** register broker metrics
+          * 创建并注册Broker的Timer Metrics对象
+          * */
         registerStats()
 
         shutdownLatch = new CountDownLatch(1)
