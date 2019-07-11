@@ -29,7 +29,9 @@ public class Histogram {
     }
 
     public void record(double value) {
+        // 根据binScheme使用value选择索引，并对该值加1.0
         this.hist[binScheme.toBin(value)] += 1.0f;
+        // 次数自增
         this.count += 1.0f;
     }
 
@@ -89,9 +91,12 @@ public class Histogram {
         public ConstantBinScheme(int bins, double min, double max) {
             if (bins < 2)
                 throw new IllegalArgumentException("Must have at least 2 bins.");
+            // 最小值
             this.min = min;
+            // 最大值
             this.max = max;
             this.bins = bins;
+            // 桶宽
             this.bucketWidth = (max - min) / (bins - 2);
         }
 
@@ -101,10 +106,11 @@ public class Histogram {
 
         public double fromBin(int b) {
             if (b == 0)
-                return Double.NEGATIVE_INFINITY;
+                return Double.NEGATIVE_INFINITY; // 负无穷
             else if (b == bins - 1)
-                return Double.POSITIVE_INFINITY;
+                return Double.POSITIVE_INFINITY; // 正无穷
             else
+                // 最小值开始计算
                 return min + (b - 1) * bucketWidth;
         }
 
@@ -124,7 +130,9 @@ public class Histogram {
         private final double scale;
 
         public LinearBinScheme(int numBins, double max) {
+            //
             this.bins = numBins;
+            // 最大值
             this.max = max;
             this.scale = max / (numBins * (numBins - 1) / 2);
         }
@@ -135,7 +143,7 @@ public class Histogram {
 
         public double fromBin(int b) {
             if (b == this.bins - 1) {
-                return Float.POSITIVE_INFINITY;
+                return Float.POSITIVE_INFINITY; // 正无穷
             } else {
                 double unscaled = (b * (b + 1.0)) / 2.0;
                 return unscaled * this.scale;

@@ -33,7 +33,7 @@ import org.apache.kafka.common.metrics.MetricConfig;
 public abstract class SampledStat implements MeasurableStat {
     // 指定每个样本的初始值
     private double initialValue;
-    // 当前使用的Sample的下
+    // 当前使用的Sample的下标
     private int current = 0;
     // List类型，保存当前SampledStat中的多个Sample
     protected List<Sample> samples;
@@ -59,21 +59,25 @@ public abstract class SampledStat implements MeasurableStat {
 
     // 根据配置指定的Sample数量决定创建新Sample还是使用之前的Sample对象
     private Sample advance(MetricConfig config, long timeMs) {
+        // current往前推进，根据配置的Sample总数取模避免越界
         this.current = (this.current + 1) % config.samples();
-        if (this.current >= samples.size()) {
-            // 创建新的Sample对象
+        if (this.current >= samples.size()) { // 索引大于samples数组大小
+            // 创建新的Sample对象，这里可能需要扩容
             Sample sample = newSample(timeMs);
             this.samples.add(sample);
+            // 返回新创建的Sample
             return sample;
         } else {
+            // 索引还在samples数组的下标范围内，直接返回
             Sample sample = current(timeMs);
-            // 重用之前的Sample对象，一共就2个
+            // 重用之前的Sample对象
             sample.reset(timeMs);
             return sample;
         }
     }
 
     protected Sample newSample(long timeMs) {
+        // 根据初始值和时间创建Sample对象
         return new Sample(this.initialValue, timeMs);
     }
 
@@ -84,9 +88,12 @@ public abstract class SampledStat implements MeasurableStat {
         return combine(this.samples, config, now);
     }
 
+    // 根据传入的时间确定Sample对象
     public Sample current(long timeMs) {
         if (samples.size() == 0)
+            // 如果samples集合中没有就新建一个
             this.samples.add(newSample(timeMs));
+        // 根据current下标进行查找
         return this.samples.get(this.current);
     }
 

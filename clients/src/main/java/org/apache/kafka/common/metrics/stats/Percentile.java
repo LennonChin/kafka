@@ -18,8 +18,14 @@ package org.apache.kafka.common.metrics.stats;
 
 import org.apache.kafka.common.MetricName;
 
+// 用于记录MetricName和percentile的对象
 public class Percentile {
 
+    /**
+     * name和percentile是final修饰的，
+     * 只能在构造方法中初始化，
+     * 只提供了它们获取的方法
+     */
     private final MetricName name;
     private final double percentile;
 
