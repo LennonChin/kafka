@@ -39,33 +39,38 @@ object TopicCommand extends Logging {
 
   def main(args: Array[String]): Unit = {
 
+    // 解析参数，TopicCommandOptions支持list、describe、create、alter和delete五种操作
     val opts = new TopicCommandOptions(args)
 
+    // 检查参数长度
     if(args.length == 0)
       CommandLineUtils.printUsageAndDie(opts.parser, "Create, delete, describe, or change a topic.")
 
     // should have exactly one action
+    // 获取对应的操作
     val actions = Seq(opts.createOpt, opts.listOpt, opts.alterOpt, opts.describeOpt, opts.deleteOpt).count(opts.options.has _)
     if(actions != 1)
       CommandLineUtils.printUsageAndDie(opts.parser, "Command must include exactly one action: --list, --describe, --create, --alter or --delete")
 
+    // 检查参数
     opts.checkArgs()
 
+    // 获取Zookeeper连接
     val zkUtils = ZkUtils(opts.options.valueOf(opts.zkConnectOpt),
                           30000,
                           30000,
                           JaasUtils.isZkSecurityEnabled())
     var exitCode = 0
     try {
-      if(opts.options.has(opts.createOpt))
+      if(opts.options.has(opts.createOpt)) // --create参数，创建Topic
         createTopic(zkUtils, opts)
-      else if(opts.options.has(opts.alterOpt))
+      else if(opts.options.has(opts.alterOpt)) // --alter参数，修改Topic
         alterTopic(zkUtils, opts)
-      else if(opts.options.has(opts.listOpt))
+      else if(opts.options.has(opts.listOpt)) // --list参数，列出Topic
         listTopics(zkUtils, opts)
-      else if(opts.options.has(opts.describeOpt))
+      else if(opts.options.has(opts.describeOpt)) // --describe参数，查询Topic详细信息
         describeTopic(zkUtils, opts)
-      else if(opts.options.has(opts.deleteOpt))
+      else if(opts.options.has(opts.deleteOpt)) // --delete参数，删除Topic
         deleteTopic(zkUtils, opts)
     } catch {
       case e: Throwable =>
@@ -90,23 +95,46 @@ object TopicCommand extends Logging {
   }
 
   def createTopic(zkUtils: ZkUtils, opts: TopicCommandOptions) {
+    // 获取--topic参数
     val topic = opts.options.valueOf(opts.topicOpt)
+    // 将--config参数解析成Properties对象
     val configs = parseTopicConfigsToBeAdded(opts)
+    // 读取--if-not-exists参数
     val ifNotExists = if (opts.options.has(opts.ifNotExistsOpt)) true else false
+    // 检测Topic名称中是否包含"."或"_"字符，若包含则输出警告信息
     if (Topic.hasCollisionChars(topic))
       println("WARNING: Due to limitations in metric names, topics with a period ('.') or underscore ('_') could collide. To avoid issues it is best to use either, but not both.")
     try {
+      // 检测是否有--replica-assignment参数
       if (opts.options.has(opts.replicaAssignmentOpt)) {
+        /**
+          * --replica-assignment参数的格式类似于：0:1:2,3:4:5,6:7:8，含义如下：
+          * 1. 编号为0的分区分配在Broker-0、Broker-1和Broker-2上；
+          * 2. 编号为1的分区分配在Broker-3、Broker-4和Broker-5上；
+          * 3. 编号为2的分区分配在Broker-6、Broker-7和Broker-8上；
+          *
+          * 这里将--replica-assignment参数内容解析成Map[Int, Seq[Int]]格式，
+          * 其key为分区的编号，value是其副本所分配的BrokerId
+          */
         val assignment = parseReplicaAssignment(opts.options.valueOf(opts.replicaAssignmentOpt))
+        // 检测max.message.bytes配置参数并给出提示
         warnOnMaxMessagesChange(configs, assignment.valuesIterator.next().length)
+        // 对Topic名称和副本分配结果进行一系列的检测，并写入Zookeeper中
         AdminUtils.createOrUpdateTopicPartitionAssignmentPathInZK(zkUtils, topic, assignment, configs, update = false)
       } else {
+        // 如果进行副本自动分配，必须指定--partitions和--replication-factor参数
         CommandLineUtils.checkRequiredArgs(opts.parser, opts.options, opts.partitionsOpt, opts.replicationFactorOpt)
+        // 获取--partitions参数的值
         val partitions = opts.options.valueOf(opts.partitionsOpt).intValue
+        // 获取--replication-factor参数的值
         val replicas = opts.options.valueOf(opts.replicationFactorOpt).intValue
+        // 检测max.message.bytes配置参数并给出提示
         warnOnMaxMessagesChange(configs, replicas)
+        // 根据--disable-rack-aware参数决定分配副本时是否考虑机架信息
         val rackAwareMode = if (opts.options.has(opts.disableRackAware)) RackAwareMode.Disabled
                             else RackAwareMode.Enforced
+
+        // 自动分配副本，并写入Zookeeper
         AdminUtils.createTopic(zkUtils, topic, partitions, replicas, configs, rackAwareMode)
       }
       println("Created topic \"%s\".".format(topic))

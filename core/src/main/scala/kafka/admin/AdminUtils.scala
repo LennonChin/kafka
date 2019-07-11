@@ -109,6 +109,7 @@ object AdminUtils extends Logging {
                               replicationFactor: Int,
                               fixedStartIndex: Int = -1,
                               startPartitionId: Int = -1): Map[Int, Seq[Int]] = {
+    // 检查参数
     if (nPartitions <= 0)
       throw new AdminOperationException("number of partitions must be larger than 0")
     if (replicationFactor <= 0)
@@ -116,35 +117,46 @@ object AdminUtils extends Logging {
     if (replicationFactor > brokerMetadatas.size)
       throw new AdminOperationException(s"replication factor: $replicationFactor larger than available brokers: ${brokerMetadatas.size}")
     if (brokerMetadatas.forall(_.rack.isEmpty))
+      // 不需要机架感知的分配
       assignReplicasToBrokersRackUnaware(nPartitions, replicationFactor, brokerMetadatas.map(_.id), fixedStartIndex,
         startPartitionId)
     else {
       if (brokerMetadatas.exists(_.rack.isEmpty))
         throw new AdminOperationException("Not all brokers have rack information for replica rack aware assignment")
+      // 需要机架感知的分配
       assignReplicasToBrokersRackAware(nPartitions, replicationFactor, brokerMetadatas, fixedStartIndex,
         startPartitionId)
     }
   }
 
+  // 不需要考虑机架感知的分配
   private def assignReplicasToBrokersRackUnaware(nPartitions: Int,
                                                  replicationFactor: Int,
                                                  brokerList: Seq[Int],
                                                  fixedStartIndex: Int,
                                                  startPartitionId: Int): Map[Int, Seq[Int]] = {
+    // 用于记录副本分配结果
     val ret = mutable.Map[Int, Seq[Int]]()
     val brokerArray = brokerList.toArray
+    // 如果没有指定起始的Broker Index，则随机选择一个起始Broker进行分配
     val startIndex = if (fixedStartIndex >= 0) fixedStartIndex else rand.nextInt(brokerArray.length)
+    // 选择起始分区
     var currentPartitionId = math.max(0, startPartitionId)
+    // nextReplicaShift指定了副本的间隔，目的是为了更均匀地将副本分配到不同的Broker上
     var nextReplicaShift = if (fixedStartIndex >= 0) fixedStartIndex else rand.nextInt(brokerArray.length)
+    // 遍历次数为分区数
     for (_ <- 0 until nPartitions) {
       if (currentPartitionId > 0 && (currentPartitionId % brokerArray.length == 0))
+        // 递增nextReplicaShift
         nextReplicaShift += 1
+      // 将"优先副本"分配到startIndex指定的Broker上
       val firstReplicaIndex = (currentPartitionId + startIndex) % brokerArray.length
+      // 记录"优先副本"的分配结果
       val replicaBuffer = mutable.ArrayBuffer(brokerArray(firstReplicaIndex))
-      for (j <- 0 until replicationFactor - 1)
+      for (j <- 0 until replicationFactor - 1) // 分配当前分区的其他副本
         replicaBuffer += brokerArray(replicaIndex(firstReplicaIndex, nextReplicaShift, j, brokerArray.length))
       ret.put(currentPartitionId, replicaBuffer)
-      currentPartitionId += 1
+      currentPartitionId += 1 // 分配下一个分区
     }
     ret
   }
@@ -399,26 +411,35 @@ object AdminUtils extends Logging {
                   replicationFactor: Int,
                   topicConfig: Properties = new Properties,
                   rackAwareMode: RackAwareMode = RackAwareMode.Enforced) {
+    // 获取Broker信息
     val brokerMetadatas = getBrokerMetadatas(zkUtils, rackAwareMode)
+    // 根据Broker信息和副本分配信息进行自动分配
     val replicaAssignment = AdminUtils.assignReplicasToBrokers(brokerMetadatas, partitions, replicationFactor)
+    // 创建并更新Zookeeper中的主题分区副本分配信息
     AdminUtils.createOrUpdateTopicPartitionAssignmentPathInZK(zkUtils, topic, replicaAssignment, topicConfig)
   }
 
+  // 创建并更新Zookeeper中的主题分区副本分配信息
   def createOrUpdateTopicPartitionAssignmentPathInZK(zkUtils: ZkUtils,
                                                      topic: String,
                                                      partitionReplicaAssignment: Map[Int, Seq[Int]],
                                                      config: Properties = new Properties,
                                                      update: Boolean = false) {
     // validate arguments
+    // 检测Topic名称是否符合要求
     Topic.validate(topic)
+
+    // --replica-assignment参数指定的每个分区的副本数应该相同
     require(partitionReplicaAssignment.values.map(_.size).toSet.size == 1, "All partitions should have the same number of replicas.")
 
+    // 得到/brokers/topics/[topic_name]主题路径
     val topicPath = getTopicPath(topic)
 
     if (!update) {
-      if (zkUtils.zkClient.exists(topicPath))
+      if (zkUtils.zkClient.exists(topicPath)) // Topic已存在
         throw new TopicExistsException("Topic \"%s\" already exists.".format(topic))
-      else if (Topic.hasCollisionChars(topic)) {
+      else if (Topic.hasCollisionChars(topic)) { // Topic名称存在"."或"_"
+        // 获取所有的Topic名称集合，打印提示出可能与新建Topic名称产生冲突的Topic
         val allTopics = zkUtils.getAllTopics()
         val collidingTopics = allTopics.filter(t => Topic.hasCollision(topic, t))
         if (collidingTopics.nonEmpty) {
@@ -427,28 +448,37 @@ object AdminUtils extends Logging {
       }
     }
 
+    // 日志打印
     partitionReplicaAssignment.values.foreach(reps => require(reps.size == reps.toSet.size, "Duplicate replica assignment found: "  + partitionReplicaAssignment))
 
     // Configs only matter if a topic is being created. Changing configs via AlterTopic is not supported
     if (!update) {
       // write out the config if there is any, this isn't transactional with the partition assignments
+      // 验证配置
       LogConfig.validate(config)
+      // 写入配置到Zookeeper
       writeEntityConfig(zkUtils, ConfigType.Topic, topic, config)
     }
 
     // create the partition assignment
+    // 创建分区分配
     writeTopicPartitionAssignment(zkUtils, topic, partitionReplicaAssignment, update)
   }
 
+  // 写入主题分区副本分配信息到Zookeeper
   private def writeTopicPartitionAssignment(zkUtils: ZkUtils, topic: String, replicaAssignment: Map[Int, Seq[Int]], update: Boolean) {
     try {
+      // 得到/brokers/topics/[topic_name]路径
       val zkPath = getTopicPath(topic)
+      // 格式化副本分配信息为JSON字符串
       val jsonPartitionData = zkUtils.replicaAssignmentZkData(replicaAssignment.map(e => (e._1.toString -> e._2)))
 
       if (!update) {
         info("Topic creation " + jsonPartitionData.toString)
+        // 创建持久节点
         zkUtils.createPersistentPath(zkPath, jsonPartitionData)
       } else {
+        // 更新持久节点
         info("Topic update " + jsonPartitionData.toString)
         zkUtils.updatePersistentPath(zkPath, jsonPartitionData)
       }
