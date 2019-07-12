@@ -34,29 +34,38 @@ object ConsoleProducer {
   def main(args: Array[String]) {
 
     try {
-        val config = new ProducerConfig(args)
-        val reader = Class.forName(config.readerClass).newInstance().asInstanceOf[MessageReader]
-        reader.init(System.in, getReaderProps(config))
+      // 读取命令行参数并进行解析
+      val config = new ProducerConfig(args)
+      // 创建LineMessageReader对象
+      val reader = Class.forName(config.readerClass).newInstance().asInstanceOf[MessageReader]
 
-        val producer =
-          if(config.useOldProducer) {
-            new OldProducer(getOldProducerProps(config))
-          } else {
-            new NewShinyProducer(getNewProducerProps(config))
-          }
+      // 初始化LineMessageReader对象
+      reader.init(System.in, getReaderProps(config))
 
-        Runtime.getRuntime.addShutdownHook(new Thread() {
-          override def run() {
-            producer.close()
-          }
-        })
+      val producer =
+        if(config.useOldProducer) {
+          new OldProducer(getOldProducerProps(config))
+        } else {
+          // 新版本的Producer
+          new NewShinyProducer(getNewProducerProps(config))
+        }
 
-        var message: ProducerRecord[Array[Byte], Array[Byte]] = null
-        do {
-          message = reader.readMessage()
-          if (message != null)
-            producer.send(message.topic, message.key, message.value)
-        } while (message != null)
+      // 添加JVM关闭钩子
+      Runtime.getRuntime.addShutdownHook(new Thread() {
+        override def run() {
+          // 关闭生产者
+          producer.close()
+        }
+      })
+
+      var message: ProducerRecord[Array[Byte], Array[Byte]] = null
+      do {
+        // 读取数据
+        message = reader.readMessage()
+        if (message != null)
+          // 发送消息
+          producer.send(message.topic, message.key, message.value)
+      } while (message != null)
     } catch {
       case e: joptsimple.OptionException =>
         System.err.println(e.getMessage)
@@ -305,18 +314,23 @@ object ConsoleProducer {
 
     override def readMessage() = {
       lineNumber += 1
+      // 读取数据，根据parse.key参数决定是否解析键
       (reader.readLine(), parseKey) match {
         case (null, _) => null
         case (line, true) =>
+          // 分割消息为键和值
           line.indexOf(keySeparator) match {
             case -1 =>
+              // 没有解析到键，根据ignore.error来决定是否抛出异常
               if (ignoreError) new ProducerRecord(topic, line.getBytes)
               else throw new KafkaException(s"No key found on line ${lineNumber}: $line")
             case n =>
+              // 能解析到键，创建ProducerRecord
               val value = (if (n + keySeparator.size > line.size) "" else line.substring(n + keySeparator.size)).getBytes
               new ProducerRecord(topic, line.substring(0, n).getBytes, value)
           }
         case (line, false) =>
+          // 直接创建ProducerRecord
           new ProducerRecord(topic, line.getBytes)
       }
     }

@@ -84,11 +84,16 @@ object TopicCommand extends Logging {
 
   }
 
+  // 从Zookeeper中获取Topic的列表，可以通过正则过滤
   private def getTopics(zkUtils: ZkUtils, opts: TopicCommandOptions): Seq[String] = {
+    // 从从Zookeeper的/brokers/topics路径读取所有主题并按名排序
     val allTopics = zkUtils.getAllTopics().sorted
+    // 判断是否有--topic参数，如果有可能需要通过正则匹配进行过滤
     if (opts.options.has(opts.topicOpt)) {
       val topicsSpec = opts.options.valueOf(opts.topicOpt)
+      // 正则白名单
       val topicsFilter = new Whitelist(topicsSpec)
+      // 进行过滤
       allTopics.filter(topicsFilter.isTopicAllowed(_, excludeInternalTopics = false))
     } else
       allTopics
@@ -144,35 +149,47 @@ object TopicCommand extends Logging {
   }
 
   def alterTopic(zkUtils: ZkUtils, opts: TopicCommandOptions) {
+    // 从Zookeeper中获取与--topic参数正则匹配的Topic集合
     val topics = getTopics(zkUtils, opts)
+    // 读取--if-exists参数
     val ifExists = if (opts.options.has(opts.ifExistsOpt)) true else false
     if (topics.length == 0 && !ifExists) {
       throw new IllegalArgumentException("Topic %s does not exist on ZK path %s".format(opts.options.valueOf(opts.topicOpt),
           opts.options.valueOf(opts.zkConnectOpt)))
     }
     topics.foreach { topic =>
+      // 修改Topic配置项信息的功能路径为/config/topics/[topic_name]
       val configs = AdminUtils.fetchEntityConfig(zkUtils, ConfigType.Topic, topic)
+      // 判断是否包含--config配置或--delete-config配置
       if(opts.options.has(opts.configOpt) || opts.options.has(opts.deleteConfigOpt)) {
         println("WARNING: Altering topic configuration from this script has been deprecated and may be removed in future releases.")
         println("         Going forward, please use kafka-configs.sh for this functionality")
 
+        // 得到新添加的和将删除的配置并进行更新
         val configsToBeAdded = parseTopicConfigsToBeAdded(opts)
         val configsToBeDeleted = parseTopicConfigsToBeDeleted(opts)
         // compile the final set of configs
         configs.putAll(configsToBeAdded)
         configsToBeDeleted.foreach(config => configs.remove(config))
+        // 修改Zookeeper中的主题配置信息
         AdminUtils.changeTopicConfig(zkUtils, topic, configs)
         println("Updated config for topic \"%s\".".format(topic))
       }
 
+      // 副本重新分配的功能
+      // 检测是否包含--partitions参数
       if(opts.options.has(opts.partitionsOpt)) {
+        // 不可修改__consumer_offsets主题，会抛出异常
         if (topic == TopicConstants.GROUP_METADATA_TOPIC_NAME) {
           throw new IllegalArgumentException("The number of partitions for the offsets topic cannot be changed.")
         }
         println("WARNING: If partitions are increased for a topic that has a key, the partition " +
           "logic or ordering of the messages will be affected")
+        // 获取--partitions参数
         val nPartitions = opts.options.valueOf(opts.partitionsOpt).intValue
+        // 获取--replica-assignment参数
         val replicaAssignmentStr = opts.options.valueOf(opts.replicaAssignmentOpt)
+        // 完成分区数量的增加以及副本分配
         AdminUtils.addPartitions(zkUtils, topic, nPartitions, replicaAssignmentStr)
         println("Adding partitions succeeded!")
       }
@@ -180,28 +197,42 @@ object TopicCommand extends Logging {
   }
 
   def listTopics(zkUtils: ZkUtils, opts: TopicCommandOptions) {
+    // 从Zookeeper中获取Topic列表
     val topics = getTopics(zkUtils, opts)
     for(topic <- topics) {
+      // 打印
       if (zkUtils.pathExists(getDeleteTopicPath(topic))) {
+        // 如果标记为删除会打印" - marked for deletion"
         println("%s - marked for deletion".format(topic))
       } else {
+        // 否则只打印主题名称
         println(topic)
       }
     }
   }
 
   def deleteTopic(zkUtils: ZkUtils, opts: TopicCommandOptions) {
+    // 获取指定的主题列表
     val topics = getTopics(zkUtils, opts)
+    // --if-exists参数
     val ifExists = if (opts.options.has(opts.ifExistsOpt)) true else false
+
+    // 根据参数进行检查
     if (topics.length == 0 && !ifExists) {
       throw new IllegalArgumentException("Topic %s does not exist on ZK path %s".format(opts.options.valueOf(opts.topicOpt),
           opts.options.valueOf(opts.zkConnectOpt)))
     }
+
+    // 遍历指定的主题
     topics.foreach { topic =>
       try {
-        if (Topic.isInternal(topic)) {
+        if (Topic.isInternal(topic)) { // 不可删除内部分区
           throw new AdminOperationException("Topic %s is a kafka internal topic and is not allowed to be marked for deletion.".format(topic))
         } else {
+          /**
+            * 将待删除的Topic名称写入到Zookeeper的/admin/delete_topics路径下
+            * 这将触发DeleteTopicsListener将待删除Topic交由TopicDeletionManager处理
+            */
           zkUtils.createPersistentPath(getDeleteTopicPath(topic))
           println("Topic %s is marked for deletion.".format(topic))
           println("Note: This will have no impact if delete.topic.enable is not set to true.")
@@ -218,33 +249,58 @@ object TopicCommand extends Logging {
   }
 
   def describeTopic(zkUtils: ZkUtils, opts: TopicCommandOptions) {
+    // 从Zookeeper读取指定Topic的列表
     val topics = getTopics(zkUtils, opts)
+
+    // 获取--under-replicated-partitions参数
     val reportUnderReplicatedPartitions = if (opts.options.has(opts.reportUnderReplicatedPartitionsOpt)) true else false
+    // 获取--unavailable-partitions参数
     val reportUnavailablePartitions = if (opts.options.has(opts.reportUnavailablePartitionsOpt)) true else false
+    // 获取--topics-with-overrides参数
     val reportOverriddenConfigs = if (opts.options.has(opts.topicsWithOverridesOpt)) true else false
+    // 获取所有可用的Broker
     val liveBrokers = zkUtils.getAllBrokersInCluster().map(_.id).toSet
+
+    // 遍历需要查看的Topic
     for (topic <- topics) {
+      // 从Zookeeper中获取每个Topic的分区分配
       zkUtils.getPartitionAssignmentForTopics(List(topic)).get(topic) match {
-        case Some(topicPartitionAssignment) =>
+        case Some(topicPartitionAssignment) => // 能够获取到
+          // 处理配置
           val describeConfigs: Boolean = !reportUnavailablePartitions && !reportUnderReplicatedPartitions
           val describePartitions: Boolean = !reportOverriddenConfigs
+
+          // 对分区分配进行排序
           val sortedPartitions = topicPartitionAssignment.toList.sortWith((m1, m2) => m1._1 < m2._1)
           if (describeConfigs) {
+
+            // 获取Topic的配置信息
             val configs = AdminUtils.fetchEntityConfig(zkUtils, ConfigType.Topic, topic)
+
+            // 没有设置--topics-with-overrides参数，且--config配置为空
             if (!reportOverriddenConfigs || configs.size() != 0) {
+              // 分区数
               val numPartitions = topicPartitionAssignment.size
+              // 副本因子
               val replicationFactor = topicPartitionAssignment.head._2.size
+              // 打印主题信息
               println("Topic:%s\tPartitionCount:%d\tReplicationFactor:%d\tConfigs:%s"
                 .format(topic, numPartitions, replicationFactor, configs.map(kv => kv._1 + "=" + kv._2).mkString(",")))
             }
           }
+
+          // 判断是否打印分区信息
           if (describePartitions) {
+            // 遍历已排序的分区
             for ((partitionId, assignedReplicas) <- sortedPartitions) {
+              // ISR副本集合
               val inSyncReplicas = zkUtils.getInSyncReplicasForPartition(topic, partitionId)
+              // Leader副本ID
               val leader = zkUtils.getLeaderForPartition(topic, partitionId)
               if ((!reportUnderReplicatedPartitions && !reportUnavailablePartitions) ||
                   (reportUnderReplicatedPartitions && inSyncReplicas.size < assignedReplicas.size) ||
                   (reportUnavailablePartitions && (!leader.isDefined || !liveBrokers.contains(leader.get)))) {
+                // 打印信息
                 print("\tTopic: " + topic)
                 print("\tPartition: " + partitionId)
                 print("\tLeader: " + (if(leader.isDefined) leader.get else "none"))
@@ -253,7 +309,7 @@ object TopicCommand extends Logging {
               }
             }
           }
-        case None =>
+        case None => // 主题不存在
           println("Topic " + topic + " doesn't exist!")
       }
     }

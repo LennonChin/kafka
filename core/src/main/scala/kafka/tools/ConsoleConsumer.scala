@@ -46,8 +46,10 @@ object ConsoleConsumer extends Logging {
   private val shutdownLatch = new CountDownLatch(1)
 
   def main(args: Array[String]) {
+    // 读取配置为ConsumerConfig对象
     val conf = new ConsumerConfig(args)
     try {
+      // 调用run()方法
       run(conf)
     } catch {
       case e: Throwable =>
@@ -57,26 +59,31 @@ object ConsoleConsumer extends Logging {
   }
 
   def run(conf: ConsumerConfig) {
-
+    // 创建消费者
     val consumer =
-      if (conf.useNewConsumer) {
+      if (conf.useNewConsumer) { // 是否使用新消费者，通过参数--new-consumer判断
         val timeoutMs = if (conf.timeoutMs >= 0) conf.timeoutMs else Long.MaxValue
+        // 创建NewShinyConsumer
         new NewShinyConsumer(Option(conf.topicArg), Option(conf.whitelistArg), getNewConsumerProps(conf), timeoutMs)
       } else {
         checkZk(conf)
         new OldConsumer(conf.filterSpec, getOldConsumerProps(conf))
       }
 
+    // 添加JVM关闭钩子方法
     addShutdownHook(consumer, conf)
 
     try {
+      // 从服务端获取消息并输出
       process(conf.maxMessages, conf.formatter, consumer, conf.skipMessageOnError)
     } finally {
+      // 清理Consumer
       consumer.cleanup()
+      // 打印获取的消息总数
       reportRecordCount()
 
       // if we generated a random group id (as none specified explicitly) then avoid polluting zookeeper with persistent group data, this is a hack
-      if (!conf.groupIdPassed)
+      if (!conf.groupIdPassed) // 清理Zookeeper相关信息
         ZkUtils.maybeDeletePath(conf.options.valueOf(conf.zkConnectOpt), "/consumers/" + conf.consumerProps.get("group.id"))
 
       shutdownLatch.countDown()

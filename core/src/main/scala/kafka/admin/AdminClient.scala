@@ -93,10 +93,12 @@ class AdminClient(val time: Time,
   }
 
   def listAllGroups(): Map[Node, List[GroupOverview]] = {
+    // 发送MetadataRequest请求获取集群中所有Broker的信息
     findAllBrokers.map {
       case broker =>
         broker -> {
           try {
+            // 发送ListGroupsRequest请求并阻塞等待响应
             listGroups(broker)
           } catch {
             case e: Exception =>
@@ -122,7 +124,9 @@ class AdminClient(val time: Time,
   }
 
   def describeGroup(groupId: String): GroupSummary = {
+    // 发送GroupCoordinatorRequest请求查询GroupCoordinator
     val coordinator = findCoordinator(groupId)
+    // 发送DescribeGroupRequest请求获取GroupMetadata元数据信息
     val responseBody = send(coordinator, ApiKeys.DESCRIBE_GROUPS, new DescribeGroupsRequest(List(groupId).asJava))
     val response = new DescribeGroupsResponse(responseBody)
     val metadata = response.groups().get(groupId)
@@ -130,6 +134,8 @@ class AdminClient(val time: Time,
       throw new KafkaException(s"Response from broker contained no metadata for group ${groupId}")
 
     Errors.forCode(metadata.errorCode()).maybeThrow()
+
+    // 解析GroupMetadata对象，封装为GroupSummary
     val members = metadata.members().map { member =>
       val metadata = Utils.readBytes(member.memberMetadata())
       val assignment = Utils.readBytes(member.memberAssignment())
@@ -144,14 +150,16 @@ class AdminClient(val time: Time,
                              assignment: List[TopicPartition])
 
   def describeConsumerGroup(groupId: String): List[ConsumerSummary] = {
+    // 获取指定Consumer Group的元数据信息
     val group = describeGroup(groupId)
-    if (group.state == "Dead")
+    if (group.state == "Dead") // Consumer Group状态为Dead，返回空集合
       return List.empty[ConsumerSummary]
 
     if (group.protocolType != ConsumerProtocol.PROTOCOL_TYPE)
       throw new IllegalArgumentException(s"Group ${groupId} with protocol type '${group.protocolType}' is not a valid consumer group")
 
-    if (group.state == "Stable") {
+    if (group.state == "Stable") { // Consumer Group状态为Stable
+      // 遍历Member并构造返回数据
       group.members.map { member =>
         val assignment = ConsumerProtocol.deserializeAssignment(ByteBuffer.wrap(member.assignment))
         new ConsumerSummary(member.memberId, member.clientId, member.clientHost, assignment.partitions().asScala.toList)
@@ -207,15 +215,22 @@ object AdminClient {
 
   def create(config: AdminConfig): AdminClient = {
     val time = new SystemTime
+    // 度量器
     val metrics = new Metrics(time)
+    // 元数据
     val metadata = new Metadata
+    // ChannelBuilder
     val channelBuilder = ClientUtils.createChannelBuilder(config.values())
 
+    // Broker的连接地址
     val brokerUrls = config.getList(CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG)
     val brokerAddresses = ClientUtils.parseAndValidateAddresses(brokerUrls)
     val bootstrapCluster = Cluster.bootstrap(brokerAddresses)
+
+    // 更新元数据
     metadata.update(bootstrapCluster, 0)
 
+    // 创建Selector线程
     val selector = new Selector(
       DefaultConnectionMaxIdleMs,
       metrics,
@@ -223,6 +238,7 @@ object AdminClient {
       "admin",
       channelBuilder)
 
+    // 创建Network对象
     val networkClient = new NetworkClient(
       selector,
       metadata,
@@ -234,6 +250,7 @@ object AdminClient {
       DefaultRequestTimeoutMs,
       time)
 
+    // 创建ConsumerNetworkClient
     val highLevelClient = new ConsumerNetworkClient(
       networkClient,
       metadata,
@@ -241,6 +258,7 @@ object AdminClient {
       DefaultRetryBackoffMs,
       DefaultRequestTimeoutMs)
 
+    // 创建AdminClient
     new AdminClient(
       time,
       DefaultRequestTimeoutMs,

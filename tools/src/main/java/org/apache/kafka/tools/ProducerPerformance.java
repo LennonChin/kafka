@@ -33,12 +33,16 @@ import net.sourceforge.argparse4j.inf.Namespace;
 public class ProducerPerformance {
 
     public static void main(String[] args) throws Exception {
+        // 命令行参数解析
         ArgumentParser parser = argParser();
 
         try {
             Namespace res = parser.parseArgs(args);
 
-            /* parse args */
+            /**
+             * parse args
+             * 解析命令行参数
+             **/
             String topicName = res.getString("topic");
             long numRecords = res.getLong("numRecords");
             int recordSize = res.getInt("recordSize");
@@ -56,23 +60,38 @@ public class ProducerPerformance {
 
             props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.ByteArraySerializer");
             props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.ByteArraySerializer");
+
+            // 创建KafkaProducer
             KafkaProducer<byte[], byte[]> producer = new KafkaProducer<byte[], byte[]>(props);
 
             /* setup perf test */
+            // 根据--record-size参数创建测试消息的载荷
             byte[] payload = new byte[recordSize];
             Random random = new Random(0);
             for (int i = 0; i < payload.length; ++i)
+                // 生产随机字节填充消息载荷
                 payload[i] = (byte) (random.nextInt(26) + 65);
+            // 创建ProducerRecord，主题名称由--topic参数指定
             ProducerRecord<byte[], byte[]> record = new ProducerRecord<>(topicName, payload);
+
+            // 创建Stats对象，用于指标的统计，其中--num-records参数指定了产生的消息个数
             Stats stats = new Stats(numRecords, 5000);
+
+            // 记录开始时间
             long startMs = System.currentTimeMillis();
 
+            // 创建限流器
             ThroughputThrottler throttler = new ThroughputThrottler(throughput, startMs);
+
+            // 循环发送消息
             for (int i = 0; i < numRecords; i++) {
+                // 记录发送时间
                 long sendStartMs = System.currentTimeMillis();
                 Callback cb = stats.nextCompletion(sendStartMs, payload.length, stats);
+                // 发送消息
                 producer.send(record, cb);
 
+                // 限流器限流
                 if (throttler.shouldThrottle(i, sendStartMs)) {
                     throttler.throttle();
                 }
@@ -80,6 +99,8 @@ public class ProducerPerformance {
 
             /* print final results */
             producer.close();
+
+            // 打印统计信息
             stats.printTotal();
         } catch (ArgumentParserException e) {
             if (args.length == 0) {
@@ -142,20 +163,34 @@ public class ProducerPerformance {
     }
 
     private static class Stats {
+        // 记录开始测试的时间戳
         private long start;
+        // 当前时间窗口的起始时间戳
         private long windowStart;
+        // 记录每个样本中的延迟
         private int[] latencies;
+        // 样本个数，与指定发送的消息数量有关，默认是500000为一个样本
         private int sampling;
+        // 记录迭代次数
         private int iteration;
         private int index;
+        // 记录整个过程发送的消息个数
         private long count;
+        // 记录发送消息的总字节数
         private long bytes;
+        // 记录从消息发出到对应响应返回之间的延迟的最大值
         private int maxLatency;
+        // 记录延迟的总时间
         private long totalLatency;
+        // 当前时间窗口中发送消息的个数
         private long windowCount;
+        // 记录当前时间窗口中最大的延时
         private int windowMaxLatency;
+        // 记录当前时间窗口中延时的总时长
         private long windowTotalLatency;
+        // 记录当前窗口发送的总字节数
         private long windowBytes;
+        // 保存两次输出之间的时间间隔
         private long reportingInterval;
 
         public Stats(long numRecords, int reportingInterval) {
@@ -177,19 +212,30 @@ public class ProducerPerformance {
         }
 
         public void record(int iter, int latency, int bytes, long time) {
+            // 计算发送消息个数
             this.count++;
+            // 计算发送总字节数
             this.bytes += bytes;
+            // 计算总延迟
             this.totalLatency += latency;
+            // 计算最大延迟
             this.maxLatency = Math.max(this.maxLatency, latency);
+            // 计算当前窗口发送消息个数
             this.windowCount++;
+            // 计算当前窗口发送总字节数
             this.windowBytes += bytes;
+            // 计算当前窗口的总延迟
             this.windowTotalLatency += latency;
+            // 记录当前窗口的最大延迟
             this.windowMaxLatency = Math.max(windowMaxLatency, latency);
+
+            // 选择样本，更新latencies中对应的值
             if (iter % this.sampling == 0) {
                 this.latencies[index] = latency;
                 this.index++;
             }
             /* maybe report the recent perf */
+            // 检测是否需要结束当前窗口，并开启新窗口
             if (time - windowStart >= reportingInterval) {
                 printWindow();
                 newWindow();
@@ -266,7 +312,9 @@ public class ProducerPerformance {
 
         public void onCompletion(RecordMetadata metadata, Exception exception) {
             long now = System.currentTimeMillis();
+            // 计算消息的延迟
             int latency = (int) (now - start);
+            // 使用Stat的record()方法进行记录
             this.stats.record(iteration, latency, bytes, now);
             if (exception != null)
                 exception.printStackTrace();

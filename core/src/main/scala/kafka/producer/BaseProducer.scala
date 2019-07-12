@@ -35,15 +35,16 @@ class NewShinyProducer(producerProps: Properties) extends BaseProducer {
   import org.apache.kafka.clients.producer.internals.ErrorLoggingCallback
 
   // decide whether to send synchronously based on producer properties
+  // 根据producer.type来决定是异步发送还是同步发送
   val sync = producerProps.getProperty("producer.type", "async").equals("sync")
 
   val producer = new KafkaProducer[Array[Byte],Array[Byte]](producerProps)
 
   override def send(topic: String, key: Array[Byte], value: Array[Byte]) {
     val record = new ProducerRecord[Array[Byte],Array[Byte]](topic, key, value)
-    if(sync) {
+    if(sync) { // 同步发送
       this.producer.send(record).get()
-    } else {
+    } else { // 异步发送
       this.producer.send(record,
         new ErrorLoggingCallback(topic, key, value, false))
     }

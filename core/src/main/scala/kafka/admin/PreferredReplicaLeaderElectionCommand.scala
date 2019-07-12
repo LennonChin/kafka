@@ -41,31 +41,40 @@ object PreferredReplicaLeaderElectionCommand extends Logging {
       .withRequiredArg
       .describedAs("urls")
       .ofType(classOf[String])
-      
+
     if(args.length == 0)
-      CommandLineUtils.printUsageAndDie(parser, "This tool causes leadership for each partition to be transferred back to the 'preferred replica'," + 
+      CommandLineUtils.printUsageAndDie(parser, "This tool causes leadership for each partition to be transferred back to the 'preferred replica'," +
                                                 " it can be used to balance leadership among the servers.")
 
+    // 解析及检测--path-to-json-file和--zookeeper参数
     val options = parser.parse(args : _*)
 
     CommandLineUtils.checkRequiredArgs(parser, options, zkConnectOpt)
 
+    // 创建Zookeeper连接
     val zkConnect = options.valueOf(zkConnectOpt)
     var zkClient: ZkClient = null
     var zkUtils: ZkUtils = null
     try {
       zkClient = ZkUtils.createZkClient(zkConnect, 30000, 30000)
-      zkUtils = ZkUtils(zkConnect, 
+      zkUtils = ZkUtils(zkConnect,
                         30000,
                         30000,
                         JaasUtils.isZkSecurityEnabled())
+
+      // 获取需要进行"优先副本"选举的分区集合
       val partitionsForPreferredReplicaElection =
+        // 未指定--path-to-json-file参数则返回全部分区
         if (!options.has(jsonFileOpt))
           zkUtils.getAllPartitions()
         else
+          // 解析--path-to-json-file参数指定的输入文件
           parsePreferredReplicaElectionData(Utils.readFileAsString(options.valueOf(jsonFileOpt)))
+
+      // 创建PreferredReplicaLeaderElectionCommand对象
       val preferredReplicaElectionCommand = new PreferredReplicaLeaderElectionCommand(zkUtils, partitionsForPreferredReplicaElection)
 
+      // 将指定的分区写入到Zookeeper的/admin/preferred_replica_election节点中
       preferredReplicaElectionCommand.moveLeaderToPreferredReplica()
       println("Successfully started preferred replica election for partitions %s".format(partitionsForPreferredReplicaElection))
     } catch {
@@ -103,10 +112,14 @@ object PreferredReplicaLeaderElectionCommand extends Logging {
 
   def writePreferredReplicaElectionData(zkUtils: ZkUtils,
                                         partitionsUndergoingPreferredReplicaElection: scala.collection.Set[TopicAndPartition]) {
+    // 得到/admin/preferred_replica_election节点的路径
     val zkPath = ZkUtils.PreferredReplicaLeaderElectionPath
+    // 构造分区字典
     val partitionsList = partitionsUndergoingPreferredReplicaElection.map(e => Map("topic" -> e.topic, "partition" -> e.partition))
+    // 将数据转换为JSON格式
     val jsonData = Json.encode(Map("version" -> 1, "partitions" -> partitionsList))
     try {
+      // 写入Zookeeper
       zkUtils.createPersistentPath(zkPath, jsonData)
       info("Created preferred replica election path with %s".format(jsonData))
     } catch {
@@ -124,7 +137,9 @@ class PreferredReplicaLeaderElectionCommand(zkUtils: ZkUtils, partitions: scala.
   extends Logging {
   def moveLeaderToPreferredReplica() = {
     try {
+      // 检查指定的Topic是否包含指定的分区
       val validPartitions = partitions.filter(p => validatePartition(zkUtils, p.topic, p.partition))
+      // 将信息写入Zookeeper
       PreferredReplicaLeaderElectionCommand.writePreferredReplicaElectionData(zkUtils, validPartitions)
     } catch {
       case e: Throwable => throw new AdminCommandFailedException("Admin command failed", e)

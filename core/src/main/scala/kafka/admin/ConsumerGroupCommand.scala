@@ -41,12 +41,15 @@ import scala.collection.{Set, mutable}
 object ConsumerGroupCommand {
 
   def main(args: Array[String]) {
+
+    // 获取参数并进行检查
     val opts = new ConsumerGroupCommandOptions(args)
 
     if (args.length == 0)
       CommandLineUtils.printUsageAndDie(opts.parser, "List all consumer groups, describe a consumer group, or delete consumer group info.")
 
     // should have exactly one action
+    // --list参数、--describe参数、--delete参数只能出现一个
     val actions = Seq(opts.listOpt, opts.describeOpt, opts.deleteOpt).count(opts.options.has _)
     if (actions != 1)
       CommandLineUtils.printUsageAndDie(opts.parser, "Command must include exactly one action: --list, --describe, --delete")
@@ -54,18 +57,27 @@ object ConsumerGroupCommand {
     opts.checkArgs()
 
     val consumerGroupService = {
-      if (opts.options.has(opts.newConsumerOpt)) new KafkaConsumerGroupService(opts)
-      else new ZkConsumerGroupService(opts)
+      // 通过--new-consumer参数指定使用新版本还是旧版本的消费者
+      if (opts.options.has(opts.newConsumerOpt))
+        // 新版本消费者使用KafkaConsumerGroupService来实现
+        new KafkaConsumerGroupService(opts)
+      else
+        // 旧版本消费者使用ZkConsumerGroupService来实现
+        new ZkConsumerGroupService(opts)
     }
 
     try {
-      if (opts.options.has(opts.listOpt))
+      if (opts.options.has(opts.listOpt)) // --list
+        // 输出全部Consumer Group的ID
         consumerGroupService.list()
-      else if (opts.options.has(opts.describeOpt))
+      else if (opts.options.has(opts.describeOpt)) // --describe
+        // 获取指定Consumer Group的描述信息
         consumerGroupService.describe()
-      else if (opts.options.has(opts.deleteOpt)) {
+      else if (opts.options.has(opts.deleteOpt)) { // --delete
+        // 删除指定的Consumer Group
         consumerGroupService match {
-          case service: ZkConsumerGroupService => service.delete()
+          case service: ZkConsumerGroupService => service.delete() // 旧版本可删除
+          // 新版本将抛出异常
           case _ => throw new IllegalStateException(s"delete is not supported for $consumerGroupService")
         }
       }
@@ -302,9 +314,11 @@ object ConsumerGroupCommand {
 
   class KafkaConsumerGroupService(val opts: ConsumerGroupCommandOptions) extends ConsumerGroupService {
 
+    // AdminClient实例
     private val adminClient = createAdminClient()
 
     // `consumer` is only needed for `describe`, so we instantiate it lazily
+    // 在KafkaConsumer实例
     private var consumer: KafkaConsumer[String, String] = null
 
     def list() {
@@ -312,19 +326,26 @@ object ConsumerGroupCommand {
     }
 
     protected def describeGroup(group: String) {
+      // 使用AdminClient相关方法查询Consumer Group的元数据信息
       val consumerSummaries = adminClient.describeConsumerGroup(group)
       if (consumerSummaries.isEmpty)
         println(s"Consumer group `${group}` does not exist or is rebalancing.")
       else {
+        // 获取KafkaConsumer
         val consumer = getConsumer()
+        // 打印表头信息
         printDescribeHeader()
+        // 遍历收到的Consumer Group元数据信息
         consumerSummaries.foreach { consumerSummary =>
+          // 分区
           val topicPartitions = consumerSummary.assignment.map(tp => TopicAndPartition(tp.topic, tp.partition))
+          // 通过KafkaConsumer的committed()方法获取指定分区最近一次提交的offset，通过发送OffsetFetchRequest实现
           val partitionOffsets = topicPartitions.flatMap { topicPartition =>
             Option(consumer.committed(new TopicPartition(topicPartition.topic, topicPartition.partition))).map { offsetAndMetadata =>
               topicPartition -> offsetAndMetadata.offset
             }
           }.toMap
+          // 获取分区对应的LEO值，输出信息
           describeTopicPartition(group, topicPartitions, partitionOffsets.get,
             _ => Some(s"${consumerSummary.clientId}_${consumerSummary.clientHost}"))
         }
@@ -346,8 +367,11 @@ object ConsumerGroupCommand {
     }
 
     private def createAdminClient(): AdminClient = {
+      // 查看是否有--command-config参数
       val props = if (opts.options.has(opts.commandConfigOpt)) Utils.loadProps(opts.options.valueOf(opts.commandConfigOpt)) else new Properties()
+      // 添加根据--bootstrap-server参数bootstrap.servers配置
       props.put(CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG, opts.options.valueOf(opts.bootstrapServerOpt))
+      // 创建AdminClient对象
       AdminClient.create(props)
     }
 

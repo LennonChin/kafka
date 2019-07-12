@@ -161,44 +161,70 @@ object AdminUtils extends Logging {
     ret
   }
 
+  // 需要考虑机架感知的分配
   private def assignReplicasToBrokersRackAware(nPartitions: Int,
                                                replicationFactor: Int,
                                                brokerMetadatas: Seq[BrokerMetadata],
                                                fixedStartIndex: Int,
                                                startPartitionId: Int): Map[Int, Seq[Int]] = {
+    // 对机架信息进行转换，得到的字典中，键是Broker的ID，值为所在的机架名称
     val brokerRackMap = brokerMetadatas.collect { case BrokerMetadata(id, Some(rack)) =>
       id -> rack
     }.toMap
+    // 统计机架个数
     val numRacks = brokerRackMap.values.toSet.size
+    // 基于机架信息生产一个Broker列表，轮询每个机架上的Broker，不同机架上的Broker交替出现
     val arrangedBrokerList = getRackAlternatedBrokerList(brokerRackMap)
+    // 所有机架上的Broker数量
     val numBrokers = arrangedBrokerList.size
+    // 用于记录副本分配结果
     val ret = mutable.Map[Int, Seq[Int]]()
+    // 选择起始Broker进行分配
     val startIndex = if (fixedStartIndex >= 0) fixedStartIndex else rand.nextInt(arrangedBrokerList.size)
+    // 选择起始分区
     var currentPartitionId = math.max(0, startPartitionId)
+    // 指定副本的间隔
     var nextReplicaShift = if (fixedStartIndex >= 0) fixedStartIndex else rand.nextInt(arrangedBrokerList.size)
+    // 遍历所有分区
     for (_ <- 0 until nPartitions) {
       if (currentPartitionId > 0 && (currentPartitionId % arrangedBrokerList.size == 0))
+        // 递增nextReplicaShift
         nextReplicaShift += 1
+      // 计算"优先副本"所在的Broker
       val firstReplicaIndex = (currentPartitionId + startIndex) % arrangedBrokerList.size
       val leader = arrangedBrokerList(firstReplicaIndex)
+      // 记录"优先副本"所在的Broker
       val replicaBuffer = mutable.ArrayBuffer(leader)
+      // 记录以及分配了当前分区的副本的机架信息
       val racksWithReplicas = mutable.Set(brokerRackMap(leader))
+      // 记录已经分配了当前分区的副本的Broker信息
       val brokersWithReplicas = mutable.Set(leader)
       var k = 0
+      // 遍历分配剩余的副本
       for (_ <- 0 until replicationFactor - 1) {
         var done = false
         while (!done) {
+          // 通过replicaIndex()方法计算当前副本所在的Broker
           val broker = arrangedBrokerList(replicaIndex(firstReplicaIndex, nextReplicaShift * numRacks, k, arrangedBrokerList.size))
           val rack = brokerRackMap(broker)
           // Skip this broker if
           // 1. there is already a broker in the same rack that has assigned a replica AND there is one or more racks
           //    that do not have any replica, or
           // 2. the broker has already assigned a replica AND there is one or more brokers that do not have replica assigned
+          /**
+            * 检测是否跳过此Broker，满足以下之一就跳过：
+            * 1. 当前机架上已经分配过其他副本，而且存在机架还未分配副本；
+            * 2. 当前Broker上已经分配过其他副本，而且存在其他Broker还未分配副本。
+            */
           if ((!racksWithReplicas.contains(rack) || racksWithReplicas.size == numRacks)
               && (!brokersWithReplicas.contains(broker) || brokersWithReplicas.size == numBrokers)) {
+            // 记录分配结果
             replicaBuffer += broker
+            // 记录此机架已经分配了当前分区的副本
             racksWithReplicas += rack
+            // 记录此Broker已经分配了当前分区的副本
             brokersWithReplicas += broker
+            // 标识此副本的分配完成
             done = true
           }
           k += 1
@@ -226,16 +252,46 @@ object AdminUtils extends Logging {
     * distributed to all racks.
     */
   private[admin] def getRackAlternatedBrokerList(brokerRackMap: Map[Int, String]): IndexedSeq[Int] = {
+    // 得到 机架 -> 该机架上的Broker的ID集合的迭代器
     val brokersIteratorByRack = getInverseMap(brokerRackMap).map { case (rack, brokers) =>
       (rack, brokers.toIterator)
     }
+    // 对机架进行排序
     val racks = brokersIteratorByRack.keys.toArray.sorted
+    // 定义结果数组
     val result = new mutable.ArrayBuffer[Int]
+    // 机架索引
     var rackIndex = 0
+    /**
+      * brokerRackMap的大小即为Broker的数量。
+      * 这里的操作实现如下：
+      * 因为之前排过序了，所以brokersIteratorByRack中机架对应的BrokerID是有序的；
+      * 按照Broker的数量为遍历次数进行循环，轮流取每个机架上的Broker中的一个。
+      * 例如，有以下Broker分配信息：
+      *     rack1: 0, 1, 2
+      *     rack2: 3, 4, 5
+      *     rack3: 6, 7, 8
+      * 一共9个Broker，那么会遍历9次：
+      * 第1次：取rack1，取rack1上的Broker-0
+      * 第2次：取rack2，取rack1上的Broker-3
+      * 第3次：取rack3，取rack1上的Broker-6
+      * 第4次：取rack1，取rack2上的Broker-1
+      * 第5次：取rack2，取rack2上的Broker-5
+      * 第6次：取rack3，取rack2上的Broker-7
+      * 第7次：取rack1，取rack3上的Broker-2
+      * 第8次：取rack2，取rack3上的Broker-5
+      * 第9次：取rack3，取rack3上的Broker-8
+      *
+      * 最终得到的Broker ID序列为：
+      * 0, 3, 6, 1, 4, 7, 2, 5, 8
+      */
     while (result.size < brokerRackMap.size) {
+      // 获取机架对应的BrokerID集合迭代器
       val rackIterator = brokersIteratorByRack(racks(rackIndex))
+      // 取其中一个Broker
       if (rackIterator.hasNext)
         result += rackIterator.next()
+      // 机架索引自增
       rackIndex = (rackIndex + 1) % racks.length
     }
     result
@@ -243,7 +299,8 @@ object AdminUtils extends Logging {
 
   private[admin] def getInverseMap(brokerRackMap: Map[Int, String]): Map[String, Seq[Int]] = {
     brokerRackMap.toSeq.map { case (id, rack) => (rack, id) }
-      .groupBy { case (rack, _) => rack }
+      .groupBy { case (rack, _) => rack } // 以机架进行分组，得到的结果为，Map[机架 -> Seq[该机架上Broker的ID]]
+      // 遍历每个分组，对每个机架上的Broker的ID进行升序排序
       .map { case (rack, rackAndIdList) => (rack, rackAndIdList.map { case (_, id) => id }.sorted) }
   }
  /**
@@ -261,40 +318,52 @@ object AdminUtils extends Logging {
                     replicaAssignmentStr: String = "",
                     checkBrokerAvailable: Boolean = true,
                     rackAwareMode: RackAwareMode = RackAwareMode.Enforced) {
+    // 从Zookeeper获取此Topic当前的副本分配情况
     val existingPartitionsReplicaList = zkUtils.getReplicaAssignmentForTopics(List(topic))
     if (existingPartitionsReplicaList.size == 0)
       throw new AdminOperationException("The topic %s does not exist".format(topic))
 
+    // 获取ID为0的分区的副本分配情况
     val existingReplicaListForPartitionZero = existingPartitionsReplicaList.find(p => p._1.partition == 0) match {
       case None => throw new AdminOperationException("the topic does not have partition with id 0, it should never happen")
       case Some(headPartitionReplica) => headPartitionReplica._2
     }
+
+    // 获取ID未0的分区的副本数量
     val partitionsToAdd = numPartitions - existingPartitionsReplicaList.size
     if (partitionsToAdd <= 0)
       throw new AdminOperationException("The number of partitions for a topic can only be increased")
 
     // create the new partition replication list
+    // 只能增加分区数量，如果指定的分区数量小于当前分区数，则抛出异常
     val brokerMetadatas = getBrokerMetadatas(zkUtils, rackAwareMode)
     val newPartitionReplicaList =
       if (replicaAssignmentStr == null || replicaAssignmentStr == "") {
+        // 确定startIndex
         val startIndex = math.max(0, brokerMetadatas.indexWhere(_.id >= existingReplicaListForPartitionZero.head))
+        // 对新增分区进行副本自动分配，注意fixedStartIndex和startPartitionId参数的取值
         AdminUtils.assignReplicasToBrokers(brokerMetadatas, partitionsToAdd, existingReplicaListForPartitionZero.size,
           startIndex, existingPartitionsReplicaList.size)
       }
       else
+        // 解析replica-assignment参数，其中会进行一系列有效性检测
         getManualReplicaAssignment(replicaAssignmentStr, brokerMetadatas.map(_.id).toSet,
           existingPartitionsReplicaList.size, checkBrokerAvailable)
 
     // check if manual assignment has the right replication factor
+    // 检测新增Partition的副本数是否正常
     val unmatchedRepFactorList = newPartitionReplicaList.values.filter(p => (p.size != existingReplicaListForPartitionZero.size))
     if (unmatchedRepFactorList.size != 0)
       throw new AdminOperationException("The replication factor in manual replication assignment " +
         " is not equal to the existing replication factor for the topic " + existingReplicaListForPartitionZero.size)
 
     info("Add partition list for %s is %s".format(topic, newPartitionReplicaList))
+    // 将原有分区的新增分区的副本分配整理为集合
     val partitionReplicaList = existingPartitionsReplicaList.map(p => p._1.partition -> p._2)
     // add the new list
+    // 将最终的副本分配结果写入Zookeeper
     partitionReplicaList ++= newPartitionReplicaList
+    // 该方法最后一个参数表示只更新副本分配情况
     AdminUtils.createOrUpdateTopicPartitionAssignmentPathInZK(zkUtils, topic, partitionReplicaList, update = true)
   }
 
@@ -547,6 +616,8 @@ object AdminUtils extends Logging {
 
   /**
    * Read the entity (topic or client) config (if any) from zk
+    * 获取对应的配置信息
+    * 路径为/config/[entity_type]/[entity_name]
    */
   def fetchEntityConfig(zkUtils: ZkUtils, entityType: String, entity: String): Properties = {
     val str: String = zkUtils.zkClient.readData(getEntityConfigPath(entityType, entity), true)
