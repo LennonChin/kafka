@@ -676,8 +676,8 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
             // 根据配置创建ConsumerCoordinator
             this.coordinator = new ConsumerCoordinator(this.client,
                     config.getString(ConsumerConfig.GROUP_ID_CONFIG), //（group.id）
-                    config.getInt(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG), //（session.timeout.ms）
-                    config.getInt(ConsumerConfig.HEARTBEAT_INTERVAL_MS_CONFIG), //（heartbeat.interval.ms）
+                    config.getInt(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG), //（session.timeout.ms，默认30000）
+                    config.getInt(ConsumerConfig.HEARTBEAT_INTERVAL_MS_CONFIG), //（heartbeat.interval.ms，默认3000）
                     assignors,
                     this.metadata,
                     this.subscriptions,

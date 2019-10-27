@@ -241,6 +241,7 @@ public abstract class AbstractCoordinator implements Closeable {
         if (!needRejoin())
             return;
 
+        // 在Rebalance之前的准备工作，可能会提交Offset，调用使用者设置的Rebalance监听器
         if (needsJoinPrepare) {
             onJoinPrepare(generation, memberId);
             needsJoinPrepare = false;

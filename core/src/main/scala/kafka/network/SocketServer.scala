@@ -52,13 +52,13 @@ class SocketServer(val config: KafkaConfig, val metrics: Metrics, val time: Time
 
   // 服务器可以有多块网卡，Kafka可以配置监听多个端口，Endpoint类封装了需要监听的host、port及网络协议
   private val endpoints = config.listeners
-  // Processor的线程个数
+  // Processor的线程个数，num.network.threads，默认值为3
   private val numProcessorThreads = config.numNetworkThreads
   // 在RequestChannel的requestQueue中缓存的最大请求个数
   private val maxQueuedRequests = config.queuedMaxRequests
-  // Processor线程的总个数
+  // Processor线程的总个数，queued.max.requests，默认值为500
   private val totalProcessorThreads = numProcessorThreads * endpoints.size
-  // 每个IP上能创建的最大连接数
+  // 每个IP上能创建的最大连接数，max.connections.per.ip，默认值为2147483647
   private val maxConnectionsPerIp = config.maxConnectionsPerIp
   // Map[String,Int]类型，具体指定某IP上最大的连接数，这里指定的最大连接数会覆盖上面maxConnectionsPerIp字段的值。
   private val maxConnectionsPerIpOverrides = config.maxConnectionsPerIpOverrides
